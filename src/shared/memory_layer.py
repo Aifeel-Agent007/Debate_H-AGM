@@ -221,62 +221,7 @@ class AgenticMemorySystem:
             "version": "v1.1"
         }
         
-        # 재시도 로직 추가 (파일 잠금 문제 해결)
-        import time
-        import random
-        max_retries = 5
-        retry_delay = 1.0  # 초기 지연 시간 (초)
-        
-        for attempt in range(max_retries):
-            try:
-                if attempt > 0:
-                    print(f"   ⚠️ Retry attempt {attempt + 1}/{max_retries}...")
-                
-                print(f"🔌 [Memory] Initializing H-AGM memory system")
-                print(f"   - User ID: {user_id}")
-                print(f"   - Neo4j URL: {neo4j_url}")
-                print(f"   - Mem0 home: {mem0_home} (isolated per panelist)")
-                print(f"   - Qdrant path: {qdrant_path} (isolated per panelist)")
-                print(f"   - Collection: mem0_{user_id}")
-            
-            self.m = Memory.from_config(config)
-                
-                print(f"✅ [Memory] H-AGM memory system initialized successfully")
-                print(f"   - User ID: {user_id}")
-                print(f"   - This is an independent memory space isolated from other panelists")
-                print(f"   - All memories stored in Neo4j graph database")
-                break  # 성공하면 루프 종료
-                
-        except Exception as e:
-            error_msg = str(e)
-                is_file_lock_error = (
-                    'WinError 32' in error_msg or 
-                    '파일을 사용 중' in error_msg or
-                    'file is locked' in error_msg.lower() or
-                    'permission denied' in error_msg.lower() or
-                    'storage.sqlite' in error_msg
-                )
-                
-                if is_file_lock_error and attempt < max_retries - 1:
-                    # 파일 잠금 오류인 경우 재시도
-                    wait_time = retry_delay * (2 ** attempt) + random.uniform(0, 0.5)  # 지수 백오프 + 랜덤 지터
-                    print(f"   ⚠️ File lock detected, waiting {wait_time:.2f} seconds before retry...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    # 최대 재시도 횟수 초과 또는 다른 오류
-                    if is_file_lock_error:
-                raise RuntimeError(
-                            f"Mem0 vector store initialization failed for user_id={user_id} after {attempt + 1} attempts: {e}. "
-                            f"This is a file locking issue. Try:\n"
-                            f"1. Closing all panelist processes and restarting\n"
-                            f"2. Deleting the Qdrant storage directory: {qdrant_path}\n"
-                            f"3. Starting panelists one at a time with delays"
-                )
-                    raise RuntimeError(
-                        f"Failed to connect to Neo4j for user_id={user_id}: {e}. "
-                        f"Please ensure Neo4j is running at {neo4j_url}."
-                    )
+
 
     def add_note(self, content: str, time: str = None, **kwargs) -> str:
         """Save memory: A-mem analysis -> Mem0g(Neo4j) storage.
