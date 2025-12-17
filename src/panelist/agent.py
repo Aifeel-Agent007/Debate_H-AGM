@@ -200,35 +200,31 @@ class PanelistAgent:
         # Add memory context
         context_info += memory_context
 
-        # First round: mandatory background research
-        tool_instruction = ""
-        if round_number == 1:
-            tool_instruction = f"""
-[첫 라운드 필수 작업]
-토론을 시작하기 전에 반드시 다음 작업을 수행하세요:
-
-1. get_context_tool을 사용하여 "{topic}"에 대한 배경 정보를 수집하세요
-   - 이 단계는 필수이며, 반드시 실행해야 합니다
-   - 수집한 정보를 바탕으로 당신의 관점에서 의견을 구성하세요
-
-2. 배경 정보 수집 후, 당신의 페르소나({self.persona_config['name']}, {self.persona_config['stance']})에 맞게 의견을 제시하세요
+        # Tool usage instructions - encourage active use
+        tool_instruction = f"""
+[검색 도구 적극 활용 지침]
+설득력 있는 토론을 위해 검색 도구를 적극적으로 활용하세요!
 
 사용 가능한 도구:
-- get_context_tool: 종합적인 배경 정보 (첫 라운드에서 필수 사용)
-- search_web_tool: 추가 웹 검색이 필요한 경우
-- get_quick_answer_tool: 빠른 답변 얻기
-- verify_fact_tool: 팩트 검증
+- search_web_tool: 웹에서 최신 정보, 뉴스, 통계 검색
+- get_context_tool: 주제에 대한 종합적인 배경 정보 수집
+- get_quick_answer_tool: 특정 질문에 대한 빠른 답변
+- verify_fact_tool: 주장이나 통계의 사실 여부 검증
 
-중요: 한 번에 하나의 도구만 호출하세요."""
-        else:
-            tool_instruction = """
-필요하다면 다음 도구 중 하나를 사용할 수 있습니다 (한 번에 하나만):
-- search_web_tool: 웹에서 정보 검색
-- get_quick_answer_tool: 빠른 답변 얻기
-- get_context_tool: 종합적인 배경 정보
-- verify_fact_tool: 팩트 검증
+도구 활용 권장 상황:
+- 최신 통계나 데이터가 필요할 때
+- 상대방 주장을 반박할 근거가 필요할 때
+- 전문가 의견이나 연구 결과를 인용하고 싶을 때
+- 역사적 사례나 해외 사례를 찾고 싶을 때
+- 자신의 주장을 뒷받침할 증거가 필요할 때
 
-중요: 도구는 정말 필요한 경우에만 사용하고, 반드시 한 번에 하나의 도구만 호출하세요."""
+도구 사용 규칙:
+- 여러 도구를 동시에 호출할 수 있습니다
+- 필요하다면 같은 도구를 다른 쿼리로 여러 번 사용하세요
+- 검색 결과를 바탕으로 구체적이고 신뢰성 있는 주장을 펼치세요
+
+당신의 페르소나: {self.persona_config['name']} ({self.persona_config['stance']})
+현재 라운드: {round_number}"""
 
         system_prompt = f"""{self.persona_config['system_prompt']}
 
