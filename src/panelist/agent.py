@@ -188,7 +188,20 @@ class PanelistAgent:
                 memory_results = self.memory_system.find_related_memories_raw(topic, k=5)
                 if memory_results:
                     memory_context = f"\n\n[과거 메모리에서 검색된 관련 정보]:\n{memory_results}"
-                    logger.info(f"🔍 Retrieved {len(memory_results.split('['))-1} relevant memories for {self.persona_config['name']}")
+                    memory_count = len(memory_results.split('[')) - 1
+                    logger.info(f"🔍 Retrieved {memory_count} relevant memories for {self.persona_config['name']}")
+
+                    # 메모리 검색 결과 터미널 출력
+                    print("\n" + "="*80)
+                    print(f"🧠 MEMORY RETRIEVAL - {self.persona_config['name']}")
+                    print("="*80)
+                    print(f"📍 Query: {topic}")
+                    print(f"📊 Found: {memory_count} relevant memories")
+                    print("-"*80)
+                    print(memory_results)
+                    print("="*80 + "\n")
+                else:
+                    print(f"\n🧠 [{self.persona_config['name']}] No relevant memories found for topic.\n")
             except Exception as e:
                 logger.warning(f"Failed to retrieve memories: {e}")
 
