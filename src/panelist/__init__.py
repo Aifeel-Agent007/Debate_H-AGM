@@ -1,0 +1,1 @@
+"""Panelist agent implementation."""

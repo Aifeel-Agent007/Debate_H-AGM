@@ -1,0 +1,45 @@
+[project]
+name = "a2a-agents-debate"
+version = "0.1.0"
+description = "Agent-to-Agent debate system using LangGraph and A2A Protocol"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "a2a-sdk>=0.3.0",
+    "langgraph>=0.3.18",
+    "langchain-openai>=0.2.0",
+    "langchain-core>=0.3.0",
+    "click>=8.1.8",
+    "httpx>=0.28.1",
+    "pydantic>=2.10.6",
+    "python-dotenv>=1.1.0",
+    "uvicorn>=0.34.2",
+    "starlette>=0.46.2",
+    "sse-starlette>=2.0.0",
+    "fastmcp>=2.13.1",
+    "tavily-python>=0.7.13",
+    "mem0ai>=1.0.0",
+    "neo4j>=5.0.0",
+    "langchain-neo4j>=0.0.1",
+    "litellm>=1.59.1",
+    # H-AGM requirements
+    "numpy>=1.24.0",
+    "sentence-transformers>=3.4.1",
+    "scikit-learn>=1.6.1",
+    "transformers>=4.46.3",
+    "nltk>=3.9.1",
+    "openai>=1.61.1",
+    "ollama>=0.3.3",
+    "rouge-score>=0.1.2",
+    "bert-score>=0.3.13",
+    "tqdm>=4.66.1",
+    "pandas>=2.2.3",
+    "rank-bm25>=0.2.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
