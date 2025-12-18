@@ -205,10 +205,14 @@ class ModeratorAgent:
         recent_statements = ""
         if panel_responses:
             last_three = panel_responses[-3:]
-            recent_statements = "\n".join([
-                f"{r.get('persona', 'Unknown')}: {r.get('opinion', '')[:150]}..."
-                for r in last_three
-            ])
+            statement_parts = []
+            for r in last_three:
+                opinion = r.get('opinion', '')
+                reasoning = r.get('reasoning', '')
+                statement_parts.append(
+                    f"[{r.get('persona', 'Unknown')}]\n의견: {opinion}\n근거: {reasoning}"
+                )
+            recent_statements = "\n\n".join(statement_parts)
 
         # Build prompt for LLM to decide next speaker
         prompt = f"""당신은 토론 사회자입니다. 다음 발언자를 결정해야 합니다.
@@ -288,10 +292,12 @@ class ModeratorAgent:
         if panel_responses:
             context_parts = []
             for resp in panel_responses[-4:]:  # Last 4 responses
+                opinion = resp.get('opinion', '')
+                reasoning = resp.get('reasoning', '')
                 context_parts.append(
-                    f"{resp.get('persona', 'Unknown')}: {resp.get('opinion', '')[:150]}..."
+                    f"[{resp.get('persona', 'Unknown')}]\n의견: {opinion}\n근거: {reasoning}"
                 )
-            previous_context = "\n".join(context_parts)
+            previous_context = "\n\n".join(context_parts)
 
         # Build query message
         query = f"""토론 주제: {topic}
@@ -375,16 +381,18 @@ class ModeratorAgent:
             persona = response_data.get("persona", "Unknown")
             stance = response_data.get("stance", "")
             opinion = response_data.get("opinion", "")
+            reasoning = response_data.get("reasoning", "")
 
             # Format the response
-            formatted_response = f"🔵 Round {round_number}\n\n{persona} ({stance}):\n{opinion}\n"
+            formatted_response = f"🔵 Round {round_number}\n\n{persona} ({stance}):\n\n[의견]\n{opinion}\n\n[근거]\n{reasoning}\n"
 
             # Log to console
             logger.info(f"\n{'─'*80}")
             logger.info(f"🔵 Round {round_number}")
             logger.info(f"{persona} ({stance})")
             logger.info(f"{'─'*80}")
-            logger.info(f"{opinion}")
+            logger.info(f"[의견]\n{opinion}")
+            logger.info(f"\n[근거]\n{reasoning}")
             logger.info(f"{'─'*80}\n")
 
             # Emit as artifact
