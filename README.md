@@ -162,6 +162,16 @@ chmod +x stop_neo4j_panelists.sh
 
 > **참고**: Linux/Mac에서는 `%TEMP%` 대신 `/tmp`를 사용합니다.
 
+#### 메모리 저장 방식 (Fallback 저장)
+
+  * **Fallback 저장 방식**: mem0의 엔티티 추출 오류를 방지하기 위해 Neo4j에 직접 Cypher 쿼리로 저장합니다.
+  * **저장되는 데이터**:
+    * 메모리 내용 (`memory`, `content`, `text` 필드)
+    * A-mem 분석 결과: 맥락(`amem_context`), 태그(`amem_tags`), 키워드(`amem_keywords`)
+    * 메타데이터: 생성 시간, 사용자 ID 등
+  * **검색 방식**: 메모리 내용, 맥락, 태그, 키워드 필드를 모두 검색하여 관련 메모리를 찾습니다.
+  * **메모리 검색 타이밍**: 2번째 라운드부터만 과거 메모리를 검색합니다 (첫 번째 라운드에는 저장된 기억이 없음).
+
   * **검증 방법**: `uv run python test_memory_separation.py` 실행 시 각 메모리가 분리되어 작동함을 확인할 수 있습니다.
 
 ### 2\. 사회자 (Moderator) 로직 개선
@@ -195,6 +205,14 @@ chmod +x stop_neo4j_panelists.sh
     1.  **의견 (Opinion)**: 핵심 주장 (150\~250자)
     2.  **근거 (Reasoning)**: 논리적/사실적 뒷받침 (450\~950자)
 
+#### C. 메모리 활용 전략
+
+  * **메모리 검색 타이밍**: 2번째 라운드부터만 과거 메모리를 검색합니다.
+    * Round 1: 저장된 기억이 없으므로 메모리 검색 없음
+    * Round 2+: 과거 발언 및 검색 결과를 메모리에서 검색하여 활용
+  * **메모리 검색 범위**: 메모리 내용, 키워드, 태그, 맥락 정보를 모두 검색
+  * **메모리 활용**: 과거 발언 참고, 상대 진영 반박, 같은 진영 지원 등에 활용
+
 -----
 
 ## ⚠️ 문제 해결 (Troubleshooting)
@@ -226,23 +244,18 @@ chmod +x stop_neo4j_panelists.sh
 
   * 오류가 아닙니다. 사회자의 **동적 종료 로직**이 토론이 충분하다고 판단(STOP)했기 때문입니다.
 
-**Q5. `entity_type_map[item["entity"]]` 오류가 발생합니다.**
+**Q5. mem0 엔티티 추출 오류 (`entity_type` 관련 오류)**
 
-  * 이 오류는 mem0가 Neo4j에서 데이터를 읽을 때 발생하는 내부 오류입니다. Neo4j에 저장된 데이터 형식이 mem0가 기대하는 형식과 맞지 않을 때 발생합니다.
-  * 해결 방법:
-    1. **Neo4j 데이터 초기화** (권장):
-       ```bash
-       python clear_neo4j_data.py
-       ```
-       이 스크립트는 모든 Neo4j 인스턴스의 데이터를 삭제하고 깨끗한 상태로 초기화합니다.
-    2. **Neo4j 컨테이너 재시작**:
-       - Windows: `.\stop_neo4j_panelists.ps1` 실행 후 `.\start_neo4j_panelists.ps1` 실행
-       - Linux/Mac: `./stop_neo4j_panelists.sh` 실행 후 `./start_neo4j_panelists.sh` 실행
-    3. **mem0 업데이트**:
-       ```bash
-       pip install --upgrade mem0ai
-       ```
-  * 코드에는 이미 오류 처리가 추가되어 있어, 오류가 발생해도 프로그램이 중단되지 않고 빈 결과를 반환합니다.
+  * ✅ **해결됨**: 현재 시스템은 **Fallback 저장 방식**을 사용하여 mem0의 엔티티 추출 기능을 우회합니다.
+  * **Fallback 저장 방식**:
+    * mem0 라이브러리를 거치지 않고 Neo4j에 직접 Cypher 쿼리로 저장
+    * 엔티티 추출 오류 없이 안정적으로 메모리 저장
+    * A-mem 분석 결과(키워드, 태그, 맥락)를 모두 보존
+  * **장점**:
+    * mem0의 엔티티 추출 오류 완전 방지
+    * Neo4j 직접 저장으로 빠른 성능
+    * 안정적인 메모리 저장 및 검색
+  * **참고**: 검색은 mem0의 벡터 검색 기능을 사용하되, 저장은 Fallback 방식으로 처리됩니다.
 
 -----
 

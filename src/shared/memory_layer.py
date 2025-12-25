@@ -227,11 +227,13 @@ class AgenticMemorySystem:
             "version": "v1.1"
         }
         
-        # Mem0 인스턴스 초기화 (이 부분이 빠져있었습니다!)
+        # Mem0 인스턴스 초기화 (Fallback 모드로 사용 - mem0 엔티티 추출 오류 방지)
         print(f"🔌 [Memory System] Neo4j({neo4j_url}) 연결 시도 중... (user_id: {user_id})")
+        print(f"ℹ️ [Memory System] Fallback 모드 활성화 - Neo4j 직접 저장 방식 사용")
         try:
+            # mem0 인스턴스는 검색용으로만 사용 (저장은 fallback 사용)
             self.m = Memory.from_config(config)
-            print(f"✅ [Memory System] Neo4j 연결 성공! (Mem0g Activated for user_id: {user_id})")
+            print(f"✅ [Memory System] Neo4j 연결 성공! (Fallback 저장 모드, user_id: {user_id})")
         except Exception as e:
             print(f"❌ [Memory System] Neo4j 연결 실패: {e}")
             print("   -> Docker 실행 여부와 비밀번호를 확인해주세요.")
@@ -269,84 +271,17 @@ class AgenticMemorySystem:
                 return ", ".join(str(v) for v in value) if value else default
             return str(value)
         
-        try:
-            # 메타데이터를 안전하게 변환 (None 방지 및 문자열 변환)
-            safe_metadata = {
-                "amem_context": safe_str(note.context, "General"),
-                "amem_tags": safe_str(note.tags, ""),
-                "amem_keywords": safe_str(note.keywords, ""),
-                "created_at": safe_str(note.timestamp, str(datetime.now()))
-            }
-            
-            result = self.m.add(
-                content, 
-                user_id=self.user_id, 
-                metadata=safe_metadata
-            )
-            
-            # 저장 결과 확인 및 디버깅
-            print(f"🔍 [Memory System] mem0.add() 반환값 디버깅:")
-            print(f"   -> result 타입: {type(result)}")
-            if result:
-                if isinstance(result, dict):
-                    print(f"   -> result 키들: {list(result.keys())}")
-                    if 'results' in result:
-                        print(f"   -> results 개수: {len(result['results'])}")
-                        if result['results']:
-                            print(f"   -> 첫 번째 result: {result['results'][0]}")
-                    else:
-                        # 다른 형식일 수 있음
-                        print(f"   -> 'results' 키 없음. 전체 result: {str(result)[:200]}")
-                elif isinstance(result, list):
-                    print(f"   -> result는 리스트 (길이: {len(result)}): {result[:2] if result else 'empty'}")
-                else:
-                    print(f"   -> 예상치 못한 형식: {str(result)[:200]}")
-            else:
-                print(f"   -> result가 None 또는 False")
-            
-            # 저장 결과 확인 및 로깅
-            if result:
-                # 다양한 반환 형식 처리
-                saved_id = None
-                
-                if isinstance(result, dict):
-                    if 'results' in result and len(result['results']) > 0:
-                        saved_id = result['results'][0].get('id') or result['results'][0].get('memory_id')
-                    elif 'id' in result:
-                        saved_id = result['id']
-                    elif 'memory_id' in result:
-                        saved_id = result['memory_id']
-                elif isinstance(result, list) and len(result) > 0:
-                    saved_id = result[0].get('id') if isinstance(result[0], dict) else str(result[0])
-                elif hasattr(result, 'id'):
-                    saved_id = result.id
-                
-                if saved_id:
-                    print(f"💾 [Memory System] 메모리 저장 성공 (ID: {saved_id}, user_id: {self.user_id})")
-                    return str(saved_id)
-            
-            # mem0 저장 실패 시 Fallback 저장 시도
-            # results가 0개인 경우: 중복으로 판단했거나 내부 오류일 수 있음
-            print(f"⚠️ [Memory System] mem0 저장 결과 없음 (results: 0개).")
-            print(f"   -> 가능한 원인: 중복 감지, 내부 오류, 또는 저장 실패")
-            print(f"   -> Fallback 저장 시도...")
-            return self._fallback_save(content, safe_metadata)
-                
-        except KeyError as e:
-            # mem0 내부 오류: entity_type_map 관련 KeyError 처리
-            if "entity" in str(e) or "entity_type" in str(e):
-                print(f"⚠️ [Memory System] Neo4j 데이터 형식 오류로 저장 실패: {e}")
-                print(f"   -> 이 오류는 Neo4j의 기존 데이터 형식 문제로 발생할 수 있습니다.")
-                print(f"   -> Neo4j 데이터를 초기화하거나 mem0를 최신 버전으로 업데이트하세요.")
-                print(f"   -> 저장하려던 내용: {content[:100]}...")
-                return "save_error"
-            raise
-        except Exception as e:
-            print(f"⚠️ [Memory System] 메모리 저장 중 오류 발생: {e}")
-            print(f"   -> 저장하려던 내용: {content[:100]}...")
-            import traceback
-            print(f"   -> 상세 오류: {traceback.format_exc()[:300]}")
-            return "save_error"
+        # 메타데이터를 안전하게 변환 (None 방지 및 문자열 변환)
+        safe_metadata = {
+            "amem_context": safe_str(note.context, "General"),
+            "amem_tags": safe_str(note.tags, ""),
+            "amem_keywords": safe_str(note.keywords, ""),
+            "created_at": safe_str(note.timestamp, str(datetime.now()))
+        }
+        
+        # Fallback 저장 방식 직접 사용 (mem0 엔티티 추출 오류 방지)
+        print(f"💾 [Memory System] Fallback 저장 방식으로 메모리 저장 중...")
+        return self._fallback_save(content, safe_metadata)
 
     def find_related_memories(self, query: str, k: int = 5) -> Tuple[str, List[str]]:
         """Search memories: Mem0 search results in A-mem format.
@@ -388,15 +323,25 @@ class AgenticMemorySystem:
                 print(f"✅ [Memory System] mem0 search 성공: {len(ids)}개 결과 발견")
                 return formatted_text, ids
                 
-        except KeyError as e:
-            # mem0 내부 오류: entity_type_map 관련 KeyError 처리
-            if "entity" in str(e) or "entity_type" in str(e):
-                print(f"⚠️ [Memory System] mem0 search 실패 (entity_type 오류). Fallback 검색 시도: {e}")
+        except (KeyError, ValueError, TypeError) as e:
+            # mem0 내부 오류: entity_type_map 관련 KeyError 및 기타 오류 처리
+            error_msg = str(e)
+            if "entity" in error_msg or "entity_type" in error_msg:
+                print(f"⚠️ [Memory System] mem0 search 실패 (entity_type 오류). Fallback 검색 시도: {error_msg[:200]}")
                 return self._fallback_search(query, k)
-            raise
+            else:
+                print(f"⚠️ [Memory System] mem0 search 오류. Fallback 검색 시도: {error_msg[:200]}")
+                return self._fallback_search(query, k)
         except Exception as e:
-            # 기타 mem0 오류 처리
-            print(f"⚠️ [Memory System] mem0 search 오류. Fallback 검색 시도: {e}")
+            # 기타 모든 mem0 오류 처리
+            error_msg = str(e)
+            import traceback
+            tb_str = traceback.format_exc()
+            # entity_type 관련 오류인지 확인
+            if "entity" in error_msg.lower() or "entity_type" in error_msg.lower() or "entity" in tb_str.lower():
+                print(f"⚠️ [Memory System] mem0 search 실패 (엔티티 추출 오류). Fallback 검색 시도: {error_msg[:200]}")
+            else:
+                print(f"⚠️ [Memory System] mem0 search 오류. Fallback 검색 시도: {error_msg[:200]}")
             return self._fallback_search(query, k)
         
         # mem0 search가 성공했지만 결과가 없는 경우
@@ -520,11 +465,48 @@ class AgenticMemorySystem:
         return text
     
     def _fallback_save(self, content: str, metadata: dict) -> str:
-        """Fallback: 직접 Neo4j에 메모리 저장 (mem0 실패 시 사용)
+        """Fallback: 직접 Neo4j에 메모리 저장 (mem0 엔티티 추출 오류 방지)
+        
+        이 메서드는 mem0의 엔티티 추출 기능에서 발생하는 오류를 방지하기 위해
+        Neo4j에 직접 Cypher 쿼리를 사용하여 메모리를 저장합니다.
+        
+        [Fallback 저장 방법 설명]
+        
+        1. 저장 방식:
+           - mem0 라이브러리를 거치지 않고 Neo4j에 직접 저장
+           - Cypher 쿼리 사용: CREATE (n:Memory { ... })
+        
+        2. 저장되는 데이터:
+           - id: 고유 메모리 ID (UUID)
+           - user_id: 패널리스트별 고유 식별자
+           - memory/content/text: 메모리 내용 (3개 필드에 동일하게 저장)
+           - amem_context: A-mem 분석 결과 - 맥락 정보
+           - amem_tags: A-mem 분석 결과 - 태그 (쉼표로 구분된 문자열)
+           - amem_keywords: A-mem 분석 결과 - 키워드 (쉼표로 구분된 문자열)
+           - created_at: 생성 시간
+           - timestamp: Neo4j datetime() 함수로 생성된 타임스탬프
+           - metadata_json: 전체 메타데이터의 JSON 문자열 버전
+        
+        3. 검색 방법:
+           - Fallback 검색 (_fallback_search)에서 다음 필드들을 검색:
+             * memory, content, text: 메모리 내용
+             * amem_context: 맥락 정보
+             * amem_tags: 태그
+             * amem_keywords: 키워드
+           - 대소문자 구분 없이 CONTAINS 검색 사용
+        
+        4. 장점:
+           - mem0의 엔티티 추출 오류 없이 안정적으로 저장
+           - Neo4j에 직접 저장하여 빠른 성능
+           - A-mem 메타데이터(키워드, 태그, 맥락) 보존
+        
+        5. 단점:
+           - mem0의 그래프 관계 자동 생성 기능 미사용
+           - 엔티티 간 관계는 수동으로 관리해야 함
         
         Args:
             content: 저장할 메모리 내용
-            metadata: 메타데이터 딕셔너리
+            metadata: 메타데이터 딕셔너리 (amem_context, amem_tags, amem_keywords 포함)
             
         Returns:
             저장된 메모리 ID 또는 "save_error"

@@ -181,19 +181,20 @@ class PanelistAgent:
                 logger.warning(f"Failed to save previous context to memory: {e}")
 
         # Retrieve relevant memories before generating response
+        # 2번째 라운드부터만 메모리 검색 (첫 번째 라운드에는 저장된 기억이 없음)
         memory_context = ""
-        if self.memory_system:
+        if self.memory_system and round_number >= 2:
             try:
                 # Search for relevant memories about the topic
                 memory_results = self.memory_system.find_related_memories_raw(topic, k=5)
                 if memory_results:
                     memory_context = f"\n\n[과거 메모리에서 검색된 관련 정보]:\n{memory_results}"
                     memory_count = len(memory_results.split('[')) - 1
-                    logger.info(f"🔍 Retrieved {memory_count} relevant memories for {self.persona_config['name']}")
+                    logger.info(f"🔍 Retrieved {memory_count} relevant memories for {self.persona_config['name']} (Round {round_number})")
 
                     # 메모리 검색 결과 터미널 출력
                     print("\n" + "="*80)
-                    print(f"🧠 MEMORY RETRIEVAL - {self.persona_config['name']}")
+                    print(f"🧠 MEMORY RETRIEVAL - {self.persona_config['name']} (Round {round_number})")
                     print("="*80)
                     print(f"📍 Query: {topic}")
                     print(f"📊 Found: {memory_count} relevant memories")
@@ -201,9 +202,12 @@ class PanelistAgent:
                     print(memory_results)
                     print("="*80 + "\n")
                 else:
-                    print(f"\n🧠 [{self.persona_config['name']}] No relevant memories found for topic.\n")
+                    print(f"\n🧠 [{self.persona_config['name']}] No relevant memories found for topic (Round {round_number}).\n")
             except Exception as e:
                 logger.warning(f"Failed to retrieve memories: {e}")
+        elif round_number == 1:
+            # 첫 번째 라운드에서는 메모리 검색하지 않음
+            print(f"\n🧠 [{self.persona_config['name']}] Round 1 - No previous memories to retrieve.\n")
 
         # Build prompt
         context_info = ""
@@ -239,8 +243,10 @@ class PanelistAgent:
 당신의 페르소나: {self.persona_config['name']} ({self.persona_config['stance']})
 현재 라운드: {round_number}"""
 
-        # 메모리 활용 지침
-        memory_instruction = """
+        # 메모리 활용 지침 (2번째 라운드부터만 표시)
+        memory_instruction = ""
+        if round_number >= 2:
+            memory_instruction = """
 [메모리 활용 지침 - 과거 발언 참고]
 위에 제공된 [과거 메모리에서 검색된 관련 정보]를 반드시 참고하여 발언을 구성하세요.
 이 메모리에는 자신과 다른 패널들의 과거 발언이 포함되어 있습니다.
