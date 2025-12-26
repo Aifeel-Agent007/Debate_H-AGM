@@ -20,4 +20,7 @@ logs/
 # MCP
 .mcp.json
 
+# Debate output files
+debate/
+
 CLAUDE.md
