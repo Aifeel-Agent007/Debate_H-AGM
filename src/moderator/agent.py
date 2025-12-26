@@ -472,17 +472,26 @@ class ModeratorAgent:
 
         # If we're at round 2 or later, ask LLM if we should continue
         if round_number >= 2:
-            # Get responses from the last round
-            last_round_responses = [r for r in panel_responses if r.get("round_number") == round_number]
-
-            # Simplified responses for LLM analysis
-            simplified_responses = [
-                {
+            # Get all responses grouped by round for comprehensive evaluation
+            all_responses_by_round = {}
+            for r in panel_responses:
+                rnd = r.get("round_number", 1)
+                if rnd not in all_responses_by_round:
+                    all_responses_by_round[rnd] = []
+                all_responses_by_round[rnd].append({
                     "persona": r.get("persona", "Unknown"),
-                    "opinion": r.get("opinion", "")[:300]  # First 300 chars
-                }
-                for r in last_round_responses
-            ]
+                    "opinion": r.get("opinion", ""),
+                    "reasoning": r.get("reasoning", "")
+                })
+
+            # Format all responses for LLM analysis
+            formatted_responses = ""
+            for rnd in sorted(all_responses_by_round.keys()):
+                formatted_responses += f"\n=== Round {rnd} ===\n"
+                for resp in all_responses_by_round[rnd]:
+                    formatted_responses += f"\n[{resp['persona']}]\n"
+                    formatted_responses += f"의견: {resp['opinion']}\n"
+                    formatted_responses += f"근거: {resp['reasoning']}\n"
 
             prompt = f"""당신은 토론 사회자입니다. 현재 토론을 계속 진행해야 할지 판단해주세요.
 
@@ -490,8 +499,8 @@ class ModeratorAgent:
 현재 라운드: {round_number}/{max_rounds}
 총 발언 수: {len(panel_responses)}
 
-최근 라운드(Round {round_number}) 발언 내용:
-{json.dumps(simplified_responses, ensure_ascii=False, indent=2)}
+전체 토론 내용:
+{formatted_responses}
 
 판단 기준:
 1. 새로운 관점이나 논점이 계속 제시되고 있는가?
