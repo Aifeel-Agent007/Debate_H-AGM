@@ -1,7 +1,10 @@
 """Moderator LangGraph agent implementation - Simple single-topic version."""
 
 import os
+import re
 import json
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal
 import httpx
 from langchain_openai import ChatOpenAI
@@ -686,6 +689,103 @@ class ModeratorAgent:
             logger.info(f"All {max_rounds} rounds completed")
             return "finalize"
 
+    def _save_debate_to_file(
+        self,
+        topic: str,
+        panel_responses: list[dict],
+        actual_rounds: int,
+        total_time: float
+    ) -> str | None:
+        """Save debate content to a file.
+
+        Args:
+            topic: Debate topic
+            panel_responses: All panelist responses
+            actual_rounds: Actually completed rounds
+            total_time: Total debate time in minutes
+
+        Returns:
+            File path if saved successfully, None otherwise
+        """
+        if not panel_responses:
+            logger.warning("No panel responses to save")
+            return None
+
+        try:
+            # 1. 디렉토리 확인 및 생성
+            project_root = Path(__file__).parent.parent.parent
+            debate_dir = project_root / "debate"
+            debate_dir.mkdir(parents=True, exist_ok=True)
+
+            # 2. 파일명 생성 (특수문자 제거)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_topic = re.sub(r'[<>:"/\\|?*\n\r\t]', '', topic)
+            safe_topic = safe_topic.replace(' ', '_')[:50]
+            filename = f"{timestamp}_{safe_topic}.txt"
+            filepath = debate_dir / filename
+
+            # 3. 파일 내용 구성
+            content_lines = []
+
+            # 헤더
+            content_lines.append("=" * 60)
+            content_lines.append(f"토론 주제: {topic}")
+            content_lines.append(f"생성 일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            content_lines.append(f"총 라운드: {actual_rounds}")
+            content_lines.append(f"총 발언 수: {len(panel_responses)}")
+            content_lines.append(f"총 토론 시간: {total_time:.1f}분")
+            content_lines.append("=" * 60)
+            content_lines.append("")
+
+            # 라운드별 발언 정리
+            for round_num in range(1, actual_rounds + 1):
+                round_responses = [
+                    r for r in panel_responses
+                    if r.get("round_number") == round_num
+                ]
+                if not round_responses:
+                    break
+
+                content_lines.append(f"[라운드 {round_num}]")
+                content_lines.append("-" * 40)
+                content_lines.append("")
+
+                for resp in round_responses:
+                    persona = resp.get("persona", "알 수 없음")
+                    stance = resp.get("stance", "")
+                    opinion = resp.get("opinion", "")
+                    reasoning = resp.get("reasoning", "")
+
+                    # 입장 한글화
+                    stance_kr = {
+                        "pro": "찬성",
+                        "con": "반대",
+                        "neutral": "중립",
+                        "conditional": "조건부"
+                    }.get(stance, stance)
+
+                    content_lines.append(f"[{persona}] ({stance_kr})")
+                    content_lines.append("")
+                    content_lines.append("【의견】")
+                    content_lines.append(opinion)
+                    content_lines.append("")
+                    content_lines.append("【논거】")
+                    content_lines.append(reasoning)
+                    content_lines.append("")
+                    content_lines.append("-" * 40)
+                    content_lines.append("")
+
+            # 4. 파일 저장
+            content = "\n".join(content_lines)
+            filepath.write_text(content, encoding="utf-8")
+
+            logger.info(f"Debate saved to file: {filepath}")
+            return str(filepath)
+
+        except Exception as e:
+            logger.error(f"Failed to save debate to file: {e}")
+            return None
+
     def _finalize_debate(self, state: dict[str, Any]) -> dict[str, Any]:
         """Finalize the debate and create summary.
 
@@ -699,7 +799,12 @@ class ModeratorAgent:
 
         topic = state["topic"]
         panel_responses = state.get("panel_responses", [])
-        max_rounds = state.get("max_rounds", 5)
+
+        # 실제 진행된 라운드 수 계산
+        actual_rounds = (
+            max(r.get("round_number", 1) for r in panel_responses)
+            if panel_responses else 0
+        )
 
         # Calculate total time used
         total_chars = sum(
@@ -711,14 +816,24 @@ class ModeratorAgent:
         logger.info(f"Total debate time: {total_time:.1f} minutes")
         logger.info(f"Total responses: {len(panel_responses)}")
 
+        # 토론 내용 파일로 저장
+        saved_filepath = self._save_debate_to_file(
+            topic=topic,
+            panel_responses=panel_responses,
+            actual_rounds=actual_rounds,
+            total_time=total_time
+        )
+
         # Simple summary (no LLM generation for now)
         summary = f"""토론이 완료되었습니다.
 
 토론 주제: {topic}
-총 라운드: {max_rounds}
+총 라운드: {actual_rounds}
 총 발언 수: {len(panel_responses)}
 총 토론 시간: {total_time:.1f}분
 """
+        if saved_filepath:
+            summary += f"저장 위치: {saved_filepath}\n"
 
         return {
             **state,
