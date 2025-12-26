@@ -299,9 +299,17 @@ class ModeratorAgent:
                 )
             previous_context = "\n\n".join(context_parts)
 
-        # Build query message
+        # Build query message with round-specific guidance
+        if round_number == 1:
+            round_guide = "이번 라운드는 첫 번째 발언입니다. 당신의 핵심 주장을 명확하게 제시해주세요."
+        else:
+            round_guide = f"""이번 라운드는 {round_number}번째 라운드입니다.
+상대 진영의 주장을 반박하거나, 같은 진영의 주장을 보완해주세요.
+상대방의 구체적인 발언을 인용하며 반박하세요. (예: "앞서 ~께서 말씀하신...")"""
+
         query = f"""토론 주제: {topic}
 현재 라운드: {round_number}
+라운드 안내: {round_guide}
 
 이전 발언 내용:
 {previous_context if previous_context else '(첫 발언입니다)'}
