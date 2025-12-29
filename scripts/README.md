@@ -50,6 +50,19 @@
   - Subtopic 생성 및 시간 배분 검증
   - 부주제별 토론 진행 테스트
 
+## 토론 평가 관련 스크립트
+
+- **`convert_debate_for_evaluation.py`** ✅ 최신
+  - 토론 결과 JSON 파일을 Debate Evaluator가 읽을 수 있는 전사본 형식으로 변환
+  - 사용법: `python scripts/convert_debate_for_evaluation.py <debate_json_file> [output_file]`
+  - 예시: `python scripts/convert_debate_for_evaluation.py debate/20241226_123456_topic.json transcript.txt`
+
+- **`run_debate_with_evaluation.py`** ✅ 최신
+  - 토론 결과 파일을 자동으로 평가하는 통합 스크립트
+  - 사용법: `python scripts/run_debate_with_evaluation.py <debate_json_file> [evaluation_mode]`
+  - 예시: `python scripts/run_debate_with_evaluation.py debate/20241226_123456_topic.json all`
+  - 평가 모드: `dqi`, `aaf`, `dqi-aaf`, `afra`, `all` (기본값: `all`)
+
 ## 테스트 실행 방법
 
 ### 루트 디렉토리에서 실행
@@ -58,47 +71,31 @@
 uv run python scripts/test_mcp_tools.py
 uv run python scripts/test_agent_mcp_usage.py
 uv run python scripts/test_subtopic_debate.py
+
+# 토론 평가
+uv run python scripts/run_debate_with_evaluation.py debate/latest.json all
 ```
 
-### scripts 디렉토리에서 실행
-```bash
-cd scripts
-uv run python test_mcp_tools.py
-uv run python test_agent_mcp_usage.py
-uv run python test_subtopic_debate.py
-```
+### 토론 평가 워크플로우
 
-## 주요 테스트 결과
+1. **토론 실행**
+   ```bash
+   ./run_debate.sh
+   # 또는
+   .\run_debate.ps1
+   ```
 
-### MCP 도구 통합 (2025-12-02)
-✅ **성공**: MCP search 도구들이 정상 작동
-- Tavily API 연동 완료
-- 4개 도구 모두 로드 및 실행 성공
-- Moderator의 research phase에서 적극 활용
+2. **토론 결과 확인**
+   - 토론 결과는 `debate/` 디렉토리에 JSON 및 텍스트 형식으로 저장됩니다.
 
-### 에이전트 모델 변경 (2025-12-02)
-✅ **완료**: Anthropic Claude → OpenAI GPT-4o-mini
-- Moderator: `gpt-4o-mini` (temperature: 0.5)
-- Panelist: `gpt-4o-mini` (temperature: 0.7)
-- 기존 Anthropic 코드는 주석 처리하여 보존
+3. **토론 평가 실행**
+   ```bash
+   # 최신 토론 자동 평가
+   ./evaluate_debate.sh
+   
+   # 특정 파일 평가
+   ./evaluate_debate.sh "debate/20241226_123456_topic.json" "all"
+   ```
 
-### 부주제 기반 토론 (2025-12-02)
-✅ **구현**: Round 기반 → Subtopic 기반으로 전환
-- 4-6개 부주제 자동 생성
-- 중요도 기반 시간 배분 (총 100분)
-- 부주제별 토론 진행 및 전환 로직
-
-## 환경 변수 요구사항
-
-테스트 실행 전 `.env` 파일에 다음 API 키가 필요합니다:
-
-```bash
-OPENAI_API_KEY=your_openai_api_key
-TAVILY_API_KEY=your_tavily_api_key
-```
-
-## 참고사항
-
-- 일부 legacy 테스트는 이전 시스템 구조를 기준으로 작성되어 현재는 실행되지 않을 수 있습니다
-- 최신 테스트는 ✅ 표시로 구분됩니다
-- 테스트 실행 시 MCP 서버가 자동으로 시작됩니다 (별도 실행 불필요)
+4. **평가 결과 확인**
+   - 평가 결과는 `debate_results/` 디렉토리에 Markdown 형식으로 저장됩니다.

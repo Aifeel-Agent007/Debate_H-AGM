@@ -20,4 +20,11 @@ logs/
 # MCP
 .mcp.json
 
+# Debate results and evaluations
+debate/
+debate_results/
+debate_batch_summary.json
+evaluation_summary.json
+
+# Temporary files
 CLAUDE.md

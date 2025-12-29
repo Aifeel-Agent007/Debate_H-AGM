@@ -90,17 +90,29 @@ class PanelistAgent:
         #     temperature=0.7,
         # )
 
-        # Using OpenAI GPT-4 mini
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable not set")
-
-        self.llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            openai_api_key=api_key,
-            temperature=0.7,
+        # Initialize LLM from configuration
+        from ..shared.llm_factory import get_llm_from_config
+        
+        # Get LLM provider from environment (default: gpt)
+        llm_provider = os.getenv("PANELIST_LLM_PROVIDER", os.getenv("DEBATE_LLM_PROVIDER", "gpt")).lower()
+        llm_model = os.getenv("PANELIST_LLM_MODEL")
+        llm_temperature = float(os.getenv("PANELIST_LLM_TEMPERATURE", "0.7"))
+        
+        self.llm = get_llm_from_config(
+            config_key="PANELIST_LLM_PROVIDER",
+            default_provider=llm_provider,
+            model=llm_model,
+            temperature=llm_temperature,
         )
-
+        
+        # Get API key for memory system (use OpenAI key as default for memory analysis)
+        from ..shared.llm_factory import API_KEY_ENV_VARS
+        api_key_env = API_KEY_ENV_VARS.get(llm_provider, "OPENAI_API_KEY")
+        api_key = os.getenv(api_key_env)
+        if not api_key:
+            # Fallback to OpenAI key
+            api_key = os.getenv("OPENAI_API_KEY")
+        
         # Get MCP search tools
         self.tools = get_search_tools()
 
@@ -143,10 +155,12 @@ class PanelistAgent:
         print(f"{'='*70}\n")
         
         try:
+            # Use LLM model for memory system (default to gpt-4o-mini for compatibility)
+            memory_model = os.getenv("MEMORY_LLM_MODEL", "gpt-4o-mini")
             self.memory_system = AgenticMemorySystem(
                 user_id=user_id,
                 neo4j_url=neo4j_url,
-                model="gpt-4o-mini",
+                model=memory_model,
                 api_key=api_key
             )
             logger.info(f"✅ H-AGM Memory System #{memory_number} initialized for {self.persona_config['name']} (user_id: {user_id})")

@@ -31,15 +31,19 @@ class ModeratorAgent:
         """
         self.panelist_urls = panelist_urls
 
-        # Using OpenAI GPT-4 mini
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable not set")
-
-        self.llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            openai_api_key=api_key,
-            temperature=0.5,
+        # Initialize LLM from configuration
+        from ..shared.llm_factory import get_llm_from_config
+        
+        # Get LLM provider from environment (default: gpt)
+        llm_provider = os.getenv("MODERATOR_LLM_PROVIDER", os.getenv("DEBATE_LLM_PROVIDER", "gpt")).lower()
+        llm_model = os.getenv("MODERATOR_LLM_MODEL")
+        llm_temperature = float(os.getenv("MODERATOR_LLM_TEMPERATURE", "0.5"))
+        
+        self.llm = get_llm_from_config(
+            config_key="MODERATOR_LLM_PROVIDER",
+            default_provider=llm_provider,
+            model=llm_model,
+            temperature=llm_temperature,
         )
 
         # Get MCP search tools
@@ -714,7 +718,9 @@ class ModeratorAgent:
         try:
             # 1. 디렉토리 확인 및 생성
             project_root = Path(__file__).parent.parent.parent
-            debate_dir = project_root / "debate"
+            # Get LLM provider for subdirectory
+            llm_provider = os.getenv("DEBATE_LLM_PROVIDER", "gpt")
+            debate_dir = project_root / "debate" / llm_provider
             debate_dir.mkdir(parents=True, exist_ok=True)
 
             # 2. 파일명 생성 (특수문자 제거)
@@ -775,11 +781,27 @@ class ModeratorAgent:
                     content_lines.append("-" * 40)
                     content_lines.append("")
 
-            # 4. 파일 저장
+            # 4. 파일 저장 (텍스트 형식)
             content = "\n".join(content_lines)
             filepath.write_text(content, encoding="utf-8")
 
+            # 5. JSON 형식으로도 저장 (evaluator용)
+            json_filepath = filepath.with_suffix('.json')
+            json_data = {
+                "topic": topic,
+                "created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "total_rounds": actual_rounds,
+                "total_responses": len(panel_responses),
+                "total_time_minutes": total_time,
+                "panel_responses": panel_responses
+            }
+            json_filepath.write_text(
+                json.dumps(json_data, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+
             logger.info(f"Debate saved to file: {filepath}")
+            logger.info(f"Debate JSON saved to file: {json_filepath}")
             return str(filepath)
 
         except Exception as e:
