@@ -154,35 +154,48 @@ class PanelistAgent:
         print(f"   Neo4j URL: {neo4j_url} (독립 인스턴스 #{memory_number})")
         print(f"{'='*70}\n")
         
-        try:
-            # Use LLM model for memory system (default to gpt-4o-mini for compatibility)
-            memory_model = os.getenv("MEMORY_LLM_MODEL", "gpt-4o-mini")
-            self.memory_system = AgenticMemorySystem(
-                user_id=user_id,
-                neo4j_url=neo4j_url,
-                model=memory_model,
-                api_key=api_key
-            )
-            logger.info(f"✅ H-AGM Memory System #{memory_number} initialized for {self.persona_config['name']} (user_id: {user_id})")
+        # Check if memory is disabled via environment variable
+        disable_memory = os.getenv("DISABLE_MEMORY", "false").lower() in ("true", "1", "yes")
+        
+        if disable_memory:
+            logger.info(f"⚠️ Memory system DISABLED for {self.persona_config['name']} (baseline mode)")
             print(f"\n{'='*70}")
-            print(f"✅ [H-AGM #{memory_number}] Memory system READY for {self.persona_config['name']}")
+            print(f"⚠️ [BASELINE MODE] Memory system DISABLED for {self.persona_config['name']}")
             print(f"{'='*70}")
-            print(f"   ✅ Memory System #{memory_number}/4 created successfully")
-            print(f"   ✅ User ID: {user_id}")
-            print(f"   ✅ This is an independent, isolated memory space")
-            print(f"   ✅ No memory sharing with other panelists")
-            print(f"{'='*70}\n")
-        except Exception as e:
-            logger.error(f"❌ H-AGM Memory System #{memory_number} initialization failed for {self.persona_config['name']}: {e}")
-            print(f"\n{'='*70}")
-            print(f"❌ [H-AGM #{memory_number}] Memory system initialization FAILED")
-            print(f"{'='*70}")
-            print(f"   Panelist: {self.persona_config['name']}")
-            print(f"   User ID: {user_id}")
-            print(f"   Error: {e}")
-            print(f"   Continuing without memory system...")
+            print(f"   ⚠️ Running in baseline mode (no memory)")
+            print(f"   ⚠️ Set DISABLE_MEMORY=false to enable memory")
             print(f"{'='*70}\n")
             self.memory_system = None
+        else:
+            try:
+                # Use LLM model for memory system (default to gpt-4o-mini for compatibility)
+                memory_model = os.getenv("MEMORY_LLM_MODEL", "gpt-4o-mini")
+                self.memory_system = AgenticMemorySystem(
+                    user_id=user_id,
+                    neo4j_url=neo4j_url,
+                    model=memory_model,
+                    api_key=api_key
+                )
+                logger.info(f"✅ H-AGM Memory System #{memory_number} initialized for {self.persona_config['name']} (user_id: {user_id})")
+                print(f"\n{'='*70}")
+                print(f"✅ [H-AGM #{memory_number}] Memory system READY for {self.persona_config['name']}")
+                print(f"{'='*70}")
+                print(f"   ✅ Memory System #{memory_number}/4 created successfully")
+                print(f"   ✅ User ID: {user_id}")
+                print(f"   ✅ This is an independent, isolated memory space")
+                print(f"   ✅ No memory sharing with other panelists")
+                print(f"{'='*70}\n")
+            except Exception as e:
+                logger.error(f"❌ H-AGM Memory System #{memory_number} initialization failed for {self.persona_config['name']}: {e}")
+                print(f"\n{'='*70}")
+                print(f"❌ [H-AGM #{memory_number}] Memory system initialization FAILED")
+                print(f"{'='*70}")
+                print(f"   Panelist: {self.persona_config['name']}")
+                print(f"   User ID: {user_id}")
+                print(f"   Error: {e}")
+                print(f"   Continuing without memory system...")
+                print(f"{'='*70}\n")
+                self.memory_system = None
 
         # Create memory saver (LangGraph checkpoint)
         self.memory = MemorySaver()

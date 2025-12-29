@@ -76,6 +76,9 @@ MODERATOR_LLM_MODEL=gpt-4o-mini
 MODERATOR_LLM_TEMPERATURE=0.5
 MEMORY_LLM_MODEL=gpt-4o-mini   # 메모리 분석 LLM
 
+# 선택사항: 메모리 시스템 비활성화 (baseline 실험용)
+DISABLE_MEMORY=false           # true로 설정 시 메모리 시스템 비활성화 (Neo4j 불필요)
+
 # 선택사항: Debate Evaluator LLM 설정
 EVAL_LLM_PROVIDER=gpt          # 평가 LLM (기본: gpt)
 EVAL_LLM_MODEL=gpt-4o
@@ -99,6 +102,8 @@ uv sync
 ### 1단계: Neo4j 인스턴스 (4개) 시작
 
 각 패널리스트의 독립적인 메모리를 위해 4개의 Neo4j 컨테이너를 실행합니다.
+
+> **⚠️ Baseline 모드**: `.env` 파일에 `DISABLE_MEMORY=true`를 설정한 경우, 이 단계를 건너뛰어도 됩니다. Baseline 모드에서는 메모리 시스템을 사용하지 않으므로 Neo4j가 필요하지 않습니다.
 
 **Windows PowerShell:**
 ```powershell
@@ -409,6 +414,31 @@ DEBATE_EVAL_OPENAI_MODEL=gpt-4o
 | **좌파 학자** | 10004 | 7690 | `panelist_left_scholar` | `%TEMP%\mem0_home\panelist_left_scholar` | `%TEMP%\qdrant_storage\panelist_left_scholar` |
 
 > **참고**: Linux/Mac에서는 `%TEMP%` 대신 `/tmp`를 사용합니다.
+
+#### Baseline 모드 (메모리 비활성화)
+
+메모리 시스템을 사용하지 않고 baseline 실험을 진행할 수 있습니다.
+
+**설정 방법:**
+`.env` 파일에 다음을 추가:
+```env
+DISABLE_MEMORY=true
+```
+
+**Baseline 모드 특징:**
+- 메모리 시스템이 초기화되지 않음 (Neo4j 불필요)
+- 과거 발언을 기억하지 않음 (각 라운드가 독립적)
+- 메모리 검색 및 저장 기능 비활성화
+- 메모리 관련 오버헤드 없음
+
+**사용 시나리오:**
+- 메모리 시스템의 효과를 비교하기 위한 baseline 실험
+- Neo4j 없이 빠르게 테스트하고 싶을 때
+- 메모리 오버헤드를 제거하고 순수 LLM 성능만 확인하고 싶을 때
+
+**주의사항:**
+- Baseline 모드에서는 각 라운드가 독립적으로 진행되므로, 패널리스트가 이전 라운드의 내용을 기억하지 않습니다.
+- 메모리를 활성화하려면 `DISABLE_MEMORY=false`로 설정하거나 해당 환경 변수를 제거하세요.
 
 #### 메모리 저장 방식 (Fallback 저장)
 
