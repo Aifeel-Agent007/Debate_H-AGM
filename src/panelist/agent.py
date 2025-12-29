@@ -17,6 +17,45 @@ from .personas import get_persona, PersonaType
 
 logger = setup_logging(__name__)
 
+# 진영별 패널리스트 분류
+FACTION_MAP = {
+    "right": ["right_politician", "right_scholar"],
+    "left": ["left_politician", "left_scholar"]
+}
+
+PERSONA_DISPLAY_NAMES = {
+    "right_politician": "우파 정치인",
+    "right_scholar": "우파 학자",
+    "left_politician": "좌파 정치인",
+    "left_scholar": "좌파 학자"
+}
+
+
+def get_faction(persona_type: str) -> str:
+    """패널리스트의 진영을 반환"""
+    for faction, members in FACTION_MAP.items():
+        if persona_type in members:
+            return faction
+    return "unknown"
+
+
+def get_ally(persona_type: str) -> str | None:
+    """같은 진영의 다른 패널리스트를 반환"""
+    faction = get_faction(persona_type)
+    for member in FACTION_MAP.get(faction, []):
+        if member != persona_type:
+            return member
+    return None
+
+
+def get_opponents(persona_type: str) -> list[str]:
+    """상대 진영의 패널리스트들을 반환"""
+    my_faction = get_faction(persona_type)
+    for faction, members in FACTION_MAP.items():
+        if faction != my_faction:
+            return members
+    return []
+
 
 class PanelistState(BaseModel):
     """State for panelist agent."""
@@ -158,6 +197,152 @@ class PanelistAgent:
 
         return workflow.compile(checkpointer=self.memory)
 
+    def _build_round1_instruction(self) -> str:
+        """라운드 1: 핵심 의견 주장 프롬프트"""
+        return """
+[1라운드 - 핵심 의견 주장]
+
+이번 라운드는 첫 번째 발언입니다. 당신의 핵심 주장을 명확하게 제시하세요.
+
+발언 목표:
+1. 당신의 정치적/학문적 관점에서 주제에 대한 명확한 입장을 밝히세요
+2. 핵심 논거 2-3개를 제시하고, 각각에 대해 상세히 설명하세요
+3. 구체적인 데이터, 사례, 전문가 의견을 인용하여 신뢰성을 높이세요
+4. 향후 반박에 대비하여 논리적 근거를 탄탄하게 구축하세요
+
+이 라운드에서는 상대 진영을 반박하지 않습니다. 오직 당신의 주장에 집중하세요.
+"""
+
+    def _build_round2_plus_instruction(self, ally: str | None, opponents: list[str]) -> str:
+        """라운드 2+: 반박 및 보완 프롬프트"""
+        ally_display = PERSONA_DISPLAY_NAMES.get(ally, ally) if ally else "없음"
+        opponent_displays = [PERSONA_DISPLAY_NAMES.get(o, o) for o in opponents]
+
+        return f"""
+[2라운드 이상 - 반박 및 보완]
+
+⚠️ 중요: 주장 반복 금지!
+아래 [나의 과거 주장 - 반복 금지 목록]에 있는 내용을 다시 주장하지 마세요:
+- 같은 핵심 논리 반복 금지
+- 같은 통계/데이터 재인용 금지
+- 같은 사례 반복 금지
+- 반드시 새로운 관점, 새로운 근거, 새로운 논점을 제시하세요
+- 이미 사용한 근거가 있다면 "앞서 제가 언급한 바와 같이"로 간략히 언급만 하세요
+
+당신의 동맹: {ally_display}
+상대 진영: {', '.join(opponent_displays)}
+
+발언 전략 (권장 비중):
+
+1. 상대 진영 반박 (70%)
+   - 상대방이 제시한 논거의 논리적 허점을 지적하세요
+   - "앞서 {opponent_displays[0]}께서 말씀하신 ~는..." 형식으로 정중하게 인용
+   - verify_fact_tool을 사용하여 상대방 주장의 사실 여부를 검증하세요 (강력 권고)
+   - 반박 시 구체적인 증거와 데이터를 제시하세요
+
+2. 재반박 (20%)
+   - 이전 라운드에서 상대방이 당신의 주장을 반박했다면 대응하세요
+   - "저의 이전 발언에 대해 ~라는 반박이 있었는데..." 형식
+   - 새로운 근거를 추가하여 원래 주장을 강화하세요
+
+3. 같은 진영 보완 (10%)
+   - {ally_display}의 주장을 보충하고 강화하세요
+   - "같은 진영의 {ally_display}께서 언급하신 바와 같이..." 형식
+
+인용 스타일 (필수):
+- "앞서 우파 정치인께서 '시장 자율에 맡겨야 한다'고 말씀하셨는데, 이는..."
+- "좌파 학자께서 언급하신 OECD 통계에 대해 제가 확인해본 결과..."
+- "같은 진영의 우파 학자께서 제시하신 이론적 근거에 더하여..."
+
+주의사항:
+- 상대방의 구체적인 발언을 인용하여 반박하세요 (막연한 반박 금지)
+- 감정적 표현보다 논리적, 사실적 반박을 우선하세요
+"""
+
+    def _extract_opinions_only(self, memories: str) -> str:
+        """과거 발언에서 의견 부분만 추출 (근거 제외)"""
+        import re
+
+        # 패턴: [패널리스트 - Round X]\n의견: ...\n근거: ...
+        pattern = r'\[([^\]]+)\]\n의견:\s*(.*?)(?=\n근거:|$)'
+        matches = re.findall(pattern, memories, re.DOTALL)
+
+        if not matches:
+            return memories  # 패턴 매칭 실패 시 원본 반환
+
+        result = []
+        for header, opinion in matches:
+            opinion_clean = opinion.strip()[:500]  # 최대 500자로 제한
+            result.append(f"[{header}]\n의견: {opinion_clean}")
+
+        return "\n\n".join(result)
+
+    async def _search_memories_by_faction(self, topic: str, round_number: int) -> dict[str, str]:
+        """진영별 메모리 검색"""
+        results = {"ally_memories": "", "opponent_memories": "", "my_previous": ""}
+
+        if not self.memory_system or round_number < 2:
+            return results
+
+        ally = get_ally(self.persona_type)
+        opponents = get_opponents(self.persona_type)
+
+        # 1. 상대 진영 주장 검색 (반박용)
+        for opponent in opponents:
+            opponent_name = PERSONA_DISPLAY_NAMES.get(opponent, opponent)
+            query = f"[{opponent_name}]"
+            memories = self.memory_system.find_related_memories_raw(query, k=3)
+            if memories:
+                results["opponent_memories"] += f"\n--- {opponent_name} ---\n{memories}"
+
+        # 2. 같은 진영 주장 검색 (보완용)
+        if ally:
+            ally_name = PERSONA_DISPLAY_NAMES.get(ally, ally)
+            memories = self.memory_system.find_related_memories_raw(f"[{ally_name}]", k=2)
+            if memories:
+                results["ally_memories"] = memories
+
+        # 3. 내 이전 발언 검색 (반복 방지용) - 더 많이 검색
+        my_name = self.persona_config["name"]
+        memories = self.memory_system.find_related_memories_raw(f"[{my_name}]", k=5)  # k=2 → k=5
+        if memories:
+            # 의견 + 근거 전체를 가져옴 (반복 방지를 위해 전체 내용 필요)
+            results["my_previous"] = memories
+
+        return results
+
+    def _build_tool_instruction(self, round_number: int) -> str:
+        """라운드별 도구 사용 지침"""
+        base_tools = """
+사용 가능한 도구:
+- search_web_tool: 웹에서 최신 정보, 뉴스, 통계 검색
+- get_context_tool: 주제에 대한 종합적인 배경 정보 수집
+- get_quick_answer_tool: 특정 질문에 대한 빠른 답변
+- verify_fact_tool: 주장이나 통계의 사실 여부 검증
+"""
+
+        if round_number == 1:
+            return f"""
+[검색 도구 활용 지침 - 1라운드]
+{base_tools}
+1라운드 권장:
+- get_context_tool: 주제 배경 정보 수집 (필수)
+- search_web_tool: 최신 통계/데이터 검색
+
+당신의 페르소나: {self.persona_config['name']} ({self.persona_config['stance']})
+"""
+        else:
+            return f"""
+[검색 도구 활용 지침 - {round_number}라운드]
+{base_tools}
+2라운드+ 권장:
+- verify_fact_tool: 상대방 주장 검증 (강력 권고!)
+  예시: verify_fact_tool(claim="상대방이 주장한 내용")
+- search_web_tool: 반박 근거 검색
+
+당신의 페르소나: {self.persona_config['name']} ({self.persona_config['stance']})
+"""
+
     async def _generate_response(self, state: dict[str, Any]) -> dict[str, Any]:
         """Generate response based on persona with ReAct pattern.
 
@@ -171,106 +356,88 @@ class PanelistAgent:
         round_number = state.get("round_number", 1)
         previous_context = state.get("previous_context", "")
 
-        # Save previous context to memory if available (opponent's arguments)
+        # Save previous context to memory if available (발언자별로 분리하여 저장)
         if previous_context and self.memory_system:
             try:
-                memory_content = f"[상대방 주장 - Round {round_number-1}] {previous_context}"
-                self.memory_system.add_note(memory_content)
-                logger.info(f"💾 Saved opponent's argument to memory for {self.persona_config['name']}")
+                import re
+                # previous_context에서 발언자별로 분리하여 저장
+                pattern = r'\[([^\]]+)\]\n의견: (.*?)\n근거: (.*?)(?=\n\n\[|\Z)'
+                matches = re.findall(pattern, previous_context, re.DOTALL)
+
+                if matches:
+                    for speaker, opinion, reasoning in matches:
+                        memory_content = f"[{speaker} - Round {round_number-1}]\n의견: {opinion.strip()}\n근거: {reasoning.strip()}"
+                        self.memory_system.add_note(memory_content)
+                        logger.info(f"💾 Saved {speaker}'s argument to memory")
+                else:
+                    # Fallback: 기존 방식
+                    memory_content = f"[상대방 주장 - Round {round_number-1}] {previous_context}"
+                    self.memory_system.add_note(memory_content)
+                    logger.info(f"💾 Saved opponent's argument to memory for {self.persona_config['name']}")
             except Exception as e:
                 logger.warning(f"Failed to save previous context to memory: {e}")
 
-        # Retrieve relevant memories before generating response
-        # 2번째 라운드부터만 메모리 검색 (첫 번째 라운드에는 저장된 기억이 없음)
+        # 진영별 메모리 검색 (2번째 라운드부터)
         memory_context = ""
+        ally = get_ally(self.persona_type)
+        opponents = get_opponents(self.persona_type)
+
         if self.memory_system and round_number >= 2:
             try:
-                # Search for relevant memories about the topic
-                memory_results = self.memory_system.find_related_memories_raw(topic, k=5)
-                if memory_results:
-                    memory_context = f"\n\n[과거 메모리에서 검색된 관련 정보]:\n{memory_results}"
-                    memory_count = len(memory_results.split('[')) - 1
-                    logger.info(f"🔍 Retrieved {memory_count} relevant memories for {self.persona_config['name']} (Round {round_number})")
+                faction_memories = await self._search_memories_by_faction(topic, round_number)
 
-                    # 메모리 검색 결과 터미널 출력
-                    print("\n" + "="*80)
-                    print(f"🧠 MEMORY RETRIEVAL - {self.persona_config['name']} (Round {round_number})")
-                    print("="*80)
-                    print(f"📍 Query: {topic}")
-                    print(f"📊 Found: {memory_count} relevant memories")
-                    print("-"*80)
-                    print(memory_results)
-                    print("="*80 + "\n")
-                else:
-                    print(f"\n🧠 [{self.persona_config['name']}] No relevant memories found for topic (Round {round_number}).\n")
+                # 메모리 검색 결과 터미널 출력
+                print("\n" + "="*80)
+                print(f"🧠 FACTION-BASED MEMORY RETRIEVAL - {self.persona_config['name']} (Round {round_number})")
+                print("="*80)
+                print(f"📍 Topic: {topic}")
+                print(f"🤝 Ally: {PERSONA_DISPLAY_NAMES.get(ally, ally) if ally else 'None'}")
+                print(f"⚔️ Opponents: {[PERSONA_DISPLAY_NAMES.get(o, o) for o in opponents]}")
+                print("-"*80)
+
+                if faction_memories["opponent_memories"]:
+                    memory_context += f"\n\n[반박 대상 - 상대 진영 주장]{faction_memories['opponent_memories']}"
+                    print(f"📛 Opponent memories found")
+                if faction_memories["ally_memories"]:
+                    memory_context += f"\n\n[보완 참고 - 같은 진영 주장]\n{faction_memories['ally_memories']}"
+                    print(f"🤝 Ally memories found")
+                if faction_memories["my_previous"]:
+                    memory_context += f"\n\n[나의 과거 주장 - 반복 금지 목록]\n{faction_memories['my_previous']}"
+                    print(f"⚠️ My previous claims found (DO NOT REPEAT)")
+
+                if not memory_context:
+                    print(f"No relevant faction memories found")
+                print("="*80 + "\n")
             except Exception as e:
-                logger.warning(f"Failed to retrieve memories: {e}")
+                logger.warning(f"Failed to retrieve faction memories: {e}")
         elif round_number == 1:
-            # 첫 번째 라운드에서는 메모리 검색하지 않음
             print(f"\n🧠 [{self.persona_config['name']}] Round 1 - No previous memories to retrieve.\n")
 
-        # Build prompt
+        # Build prompt - 이전 발언 컨텍스트
         context_info = ""
         if previous_context and round_number > 1:
-            context_info = f"\n\n이전 라운드 정보:\n{previous_context}"
-        
-        # Add memory context
+            context_info = f"\n\n[이번 라운드 이전 발언들]\n{previous_context}"
+
+        # Add memory context (진영별 메모리)
         context_info += memory_context
 
-        # Tool usage instructions - encourage active use
-        tool_instruction = f"""
-[검색 도구 적극 활용 지침]
-설득력 있는 토론을 위해 검색 도구를 적극적으로 활용하세요!
+        # 라운드별 프롬프트 구성
+        if round_number == 1:
+            round_instruction = self._build_round1_instruction()
+        else:
+            round_instruction = self._build_round2_plus_instruction(ally, opponents)
 
-사용 가능한 도구:
-- search_web_tool: 웹에서 최신 정보, 뉴스, 통계 검색
-- get_context_tool: 주제에 대한 종합적인 배경 정보 수집
-- get_quick_answer_tool: 특정 질문에 대한 빠른 답변
-- verify_fact_tool: 주장이나 통계의 사실 여부 검증
-
-도구 활용 권장 상황:
-- 최신 통계나 데이터가 필요할 때
-- 상대방 주장을 반박할 근거가 필요할 때
-- 전문가 의견이나 연구 결과를 인용하고 싶을 때
-- 역사적 사례나 해외 사례를 찾고 싶을 때
-- 자신의 주장을 뒷받침할 증거가 필요할 때
-
-도구 사용 규칙:
-- 여러 도구를 동시에 호출할 수 있습니다
-- 필요하다면 같은 도구를 다른 쿼리로 여러 번 사용하세요
-- 검색 결과를 바탕으로 구체적이고 신뢰성 있는 주장을 펼치세요
-
-당신의 페르소나: {self.persona_config['name']} ({self.persona_config['stance']})
-현재 라운드: {round_number}"""
-
-        # 메모리 활용 지침 (2번째 라운드부터만 표시)
-        memory_instruction = ""
-        if round_number >= 2:
-            memory_instruction = """
-[메모리 활용 지침 - 과거 발언 참고]
-위에 제공된 [과거 메모리에서 검색된 관련 정보]를 반드시 참고하여 발언을 구성하세요.
-이 메모리에는 자신과 다른 패널들의 과거 발언이 포함되어 있습니다.
-
-메모리 활용 방법:
-1. 같은 진영 지원: 같은 진영 패널의 주장을 보충하고 강화하세요
-2. 상대 진영 반박: 상대 진영의 주장에 대해 논리적으로 반박하세요
-3. 재반박: 내 이전 주장에 대한 상대의 반박이 있다면, 이에 대해 재반박하세요
-4. 반복 회피: 이미 한 주장을 반복하지 마세요. 꼭 필요한 경우에만 "앞서 말씀드린 바와 같이", "기존에 설명한 대로" 등의 표현을 사용하여 간략히 언급하세요
-5. 전략적 선택: 새로운 주장을 펼칠지, 기존 주장을 보충할지, 상대를 반박할지 상황에 맞게 선택하세요
-6. 자연스러운 흐름: 토론의 맥락과 흐름을 중요시하고, 이전 발언들과 자연스럽게 연결되도록 하세요
-
-주의사항:
-- 메모리에서 검색된 정보가 없더라도 당황하지 말고 주제에 맞는 발언을 하세요
-- 상대방의 논점을 정확히 파악하고 핵심을 공략하세요
-- 감정적 대응보다 논리적이고 근거 있는 반박을 하세요
-"""
+        # 도구 사용 지침 (라운드별 차별화)
+        tool_instruction = self._build_tool_instruction(round_number)
 
         system_prompt = f"""{self.persona_config['system_prompt']}
 
 토론 주제: {topic}
-현재 라운드: {round_number}{context_info}
-{memory_instruction}
-위 토론 주제에 대해 당신의 관점에서 의견을 제시해주세요.
+현재 라운드: {round_number}
+{context_info}
+
+{round_instruction}
+
 {tool_instruction}
 
 최종 응답은 반드시 다음 형식과 길이로 작성해주세요:
@@ -287,7 +454,7 @@ class PanelistAgent:
 2. 근거 (Reasoning): 당신의 의견을 뒷받침하는 논리적 근거를 매우 상세히 작성 (30~60문장, 약 4000~8500자)
    - 최소 3~5개의 구체적인 예시와 최신 데이터를 포함
    - 각 논점을 충분히 전개하고 깊이 있게 분석
-   - 상대 관점에 대한 예상 반박과 재반박 포함
+   - 라운드 2+에서는 반드시 상대방 발언을 인용하며 반박
    - 역사적 사례, 통계, 전문가 의견 등 다양한 근거 활용
    - 논리적 연결고리를 명확히 하고 단계적으로 전개
    - 각 근거마다 충분한 설명과 분석 제공
@@ -453,10 +620,11 @@ class PanelistAgent:
             opinion = str(response_data)
             reasoning = result.get("reasoning", "No reasoning provided")
 
-        # 패널리스트 자신의 발언을 메모리에 저장
+        # 패널리스트 자신의 발언을 메모리에 저장 (페르소나 이름 명시)
         if self.memory_system:
             try:
-                full_response = f"[내 발언 - Round {round_number}]\n의견: {opinion}\n근거: {reasoning}"
+                persona_name = self.persona_config["name"]
+                full_response = f"[{persona_name} - Round {round_number}]\n의견: {opinion}\n근거: {reasoning}"
                 memory_id = self.memory_system.add_note(full_response)
                 logger.info(f"💾 Saved own response to memory for {self.persona_config['name']} (memory_id: {memory_id})")
             except Exception as e:

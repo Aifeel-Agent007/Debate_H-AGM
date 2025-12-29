@@ -4,6 +4,7 @@ import os
 import json
 import uuid
 import tempfile
+import math
 from datetime import datetime
 from typing import List, Dict, Optional, Literal, Any, Union, Tuple
 from abc import ABC, abstractmethod
@@ -284,7 +285,7 @@ class AgenticMemorySystem:
         return self._fallback_save(content, safe_metadata)
 
     def find_related_memories(self, query: str, k: int = 5) -> Tuple[str, List[str]]:
-        """Search memories: Mem0 search results in A-mem format.
+        """Search memories: Hybrid search (vector + graph expansion).
         
         Args:
             query: Search query
@@ -293,60 +294,8 @@ class AgenticMemorySystem:
         Returns:
             Tuple of (formatted_text, memory_ids)
         """
-        # 1차 시도: mem0의 search 사용
-        try:
-            results = self.m.search(query, user_id=self.user_id, limit=k)
-            
-            if isinstance(results, dict):
-                if "results" in results:
-                    results = results["results"]
-                else:
-                    results = []
-            
-            # 결과가 있으면 반환
-            if results:
-                formatted_text = ""
-                ids = []
-                for item in results:
-                    mem_id = item.get("id", "unknown")
-                    text = item.get("memory", "")
-                    meta = item.get("metadata", {})
-                    
-                    context = meta.get("amem_context", "")
-                    tags = meta.get("amem_tags", [])
-                    
-                    ids.append(mem_id)
-                    formatted_text += (
-                        f"- [내용]: {text}\n"
-                        f"  [맥락]: {context} | [태그]: {tags}\n"
-                    )
-                print(f"✅ [Memory System] mem0 search 성공: {len(ids)}개 결과 발견")
-                return formatted_text, ids
-                
-        except (KeyError, ValueError, TypeError) as e:
-            # mem0 내부 오류: entity_type_map 관련 KeyError 및 기타 오류 처리
-            error_msg = str(e)
-            if "entity" in error_msg or "entity_type" in error_msg:
-                print(f"⚠️ [Memory System] mem0 search 실패 (entity_type 오류). Fallback 검색 시도: {error_msg[:200]}")
-                return self._fallback_search(query, k)
-            else:
-                print(f"⚠️ [Memory System] mem0 search 오류. Fallback 검색 시도: {error_msg[:200]}")
-                return self._fallback_search(query, k)
-        except Exception as e:
-            # 기타 모든 mem0 오류 처리
-            error_msg = str(e)
-            import traceback
-            tb_str = traceback.format_exc()
-            # entity_type 관련 오류인지 확인
-            if "entity" in error_msg.lower() or "entity_type" in error_msg.lower() or "entity" in tb_str.lower():
-                print(f"⚠️ [Memory System] mem0 search 실패 (엔티티 추출 오류). Fallback 검색 시도: {error_msg[:200]}")
-            else:
-                print(f"⚠️ [Memory System] mem0 search 오류. Fallback 검색 시도: {error_msg[:200]}")
-            return self._fallback_search(query, k)
-        
-        # mem0 search가 성공했지만 결과가 없는 경우
-        print(f"⚠️ [Memory System] mem0 search 결과 없음. Fallback 검색 시도")
-        return self._fallback_search(query, k)
+        # 하이브리드 검색 사용 (기본 파라미터)
+        return self.find_related_memories_hybrid(query, k=k, alpha=0.7, max_distance=2)
     
     def _fallback_search(self, query: str, k: int = 5) -> Tuple[str, List[str]]:
         """Fallback: 직접 Neo4j에서 메모리 검색 (mem0 실패 시 사용)
@@ -563,6 +512,8 @@ class AgenticMemorySystem:
                     saved_id = record["id"]
                     driver.close()
                     print(f"✅ [Memory System] Fallback 저장 성공 (ID: {saved_id}, user_id: {self.user_id})")
+                    # 관계 생성 추가
+                    self._create_relationships(saved_id, content, metadata)
                     return str(saved_id)
             
             driver.close()
@@ -578,6 +529,329 @@ class AgenticMemorySystem:
             print(f"   -> 상세 오류: {traceback.format_exc()[:300]}")
             return "save_error"
     
+    def _create_relationships(self, new_mem_id: str, content: str, metadata: dict):
+        """새 메모리와 기존 메모리 간 관계 생성
+        
+        Args:
+            new_mem_id: 새로 저장된 메모리 ID
+            content: 메모리 내용
+            metadata: 메타데이터 (tags, keywords 포함)
+        """
+        try:
+            from neo4j import GraphDatabase
+            
+            driver = GraphDatabase.driver(
+                self.neo4j_url,
+                auth=(self.neo4j_user, self.neo4j_pass)
+            )
+            
+            with driver.session() as session:
+                # 키워드나 태그가 겹치는 기존 메모리 찾기
+                keywords_str = metadata.get("amem_keywords", "")
+                tags_str = metadata.get("amem_tags", "")
+                
+                keywords = [k.strip() for k in keywords_str.split(",")] if keywords_str else []
+                tags = [t.strip() for t in tags_str.split(",")] if tags_str else []
+                
+                # 관련 메모리 찾기 (키워드/태그 기반)
+                if keywords or tags:
+                    cypher_query = """
+                    MATCH (new:Memory {id: $new_id, user_id: $user_id})
+                    MATCH (existing:Memory)
+                    WHERE existing.id <> $new_id 
+                      AND existing.user_id = $user_id
+                      AND (
+                        ANY(kw IN $keywords WHERE 
+                          (existing.amem_keywords IS NOT NULL AND existing.amem_keywords CONTAINS kw)
+                          OR (existing.amem_tags IS NOT NULL AND existing.amem_tags CONTAINS kw)
+                        )
+                        OR ANY(tag IN $tags WHERE 
+                          existing.amem_tags IS NOT NULL AND existing.amem_tags CONTAINS tag
+                        )
+                        OR (existing.amem_context IS NOT NULL AND existing.amem_context = $context)
+                      )
+                    MERGE (new)-[r:RELATED_TO {
+                        weight: 1.0,
+                        created_at: datetime()
+                    }]->(existing)
+                    RETURN count(r) as rel_count
+                    """
+                    
+                    result = session.run(
+                        cypher_query,
+                        {
+                            "new_id": new_mem_id,
+                            "user_id": self.user_id,
+                            "keywords": keywords,
+                            "tags": tags,
+                            "context": metadata.get("amem_context", "")
+                        }
+                    )
+                    
+                    record = result.single()
+                    if record:
+                        rel_count = record["rel_count"]
+                        if rel_count > 0:
+                            print(f"🔗 [Graph] {rel_count}개의 관계 생성됨")
+            
+            driver.close()
+        except Exception as e:
+            print(f"⚠️ [Graph] 관계 생성 실패: {e}")
+
+    def _graph_expansion(self, node_ids: List[str], max_distance: int = 2, max_nodes: int = 20) -> Dict[str, float]:
+        """그래프 확장: 주어진 노드들에서 distance d 내의 관련 노드 찾기
+        
+        Args:
+            node_ids: 시작 노드 ID 리스트
+            max_distance: 최대 탐색 거리 (d)
+            max_nodes: 최대 반환 노드 수
+            
+        Returns:
+            {node_id: centrality_score} 딕셔너리
+        """
+        try:
+            from neo4j import GraphDatabase
+            
+            if not node_ids:
+                return {}
+            
+            driver = GraphDatabase.driver(
+                self.neo4j_url,
+                auth=(self.neo4j_user, self.neo4j_pass)
+            )
+            
+            with driver.session() as session:
+                # 그래프 확장 쿼리: distance d 내의 모든 노드 찾기
+                cypher_query = """
+                MATCH path = (start:Memory)-[*1..$max_distance]-(related:Memory)
+                WHERE start.id IN $node_ids 
+                  AND start.user_id = $user_id
+                  AND related.user_id = $user_id
+                WITH related, 
+                     min(length(path)) as min_distance,
+                     count(path) as path_count
+                RETURN related.id as node_id, 
+                       min_distance,
+                       path_count,
+                       // 간단한 centrality: 연결된 경로 수와 거리 역수
+                       1.0 / (min_distance + 1) * log(path_count + 1) as centrality
+                ORDER BY centrality DESC
+                LIMIT $max_nodes
+                """
+                
+                result = session.run(
+                    cypher_query,
+                    {
+                        "node_ids": node_ids,
+                        "user_id": self.user_id,
+                        "max_distance": max_distance,
+                        "max_nodes": max_nodes
+                    }
+                )
+                
+                expanded_nodes = {}
+                for record in result:
+                    node_id = record["node_id"]
+                    centrality = record["centrality"]
+                    expanded_nodes[node_id] = float(centrality) if centrality else 0.0
+            
+            driver.close()
+            return expanded_nodes
+            
+        except Exception as e:
+            print(f"⚠️ [Graph] 그래프 확장 실패: {e}")
+            import traceback
+            print(f"   상세: {traceback.format_exc()[:200]}")
+            return {}
+
+    def _calculate_node_centrality(self, node_id: str) -> float:
+        """특정 노드의 centrality 계산 (간단한 버전)
+        
+        Args:
+            node_id: 노드 ID
+            
+        Returns:
+            Centrality 점수
+        """
+        try:
+            from neo4j import GraphDatabase
+            
+            driver = GraphDatabase.driver(
+                self.neo4j_url,
+                auth=(self.neo4j_user, self.neo4j_pass)
+            )
+            
+            with driver.session() as session:
+                # 연결된 노드 수와 경로 수를 기반으로 centrality 계산
+                cypher_query = """
+                MATCH (n:Memory {id: $node_id, user_id: $user_id})
+                OPTIONAL MATCH (n)-[r:RELATED_TO]-(connected:Memory)
+                WITH n, count(DISTINCT connected) as degree, count(r) as edge_count
+                RETURN 
+                    CASE 
+                        WHEN degree > 0 THEN log(degree + 1) * (edge_count / (degree + 1.0))
+                        ELSE 0.0
+                    END as centrality
+                """
+                
+                result = session.run(
+                    cypher_query,
+                    {
+                        "node_id": node_id,
+                        "user_id": self.user_id
+                    }
+                )
+                
+                record = result.single()
+                driver.close()
+                
+                if record:
+                    centrality = record["centrality"]
+                    return float(centrality) if centrality else 0.0
+            return 0.0
+            
+        except Exception as e:
+            print(f"⚠️ [Graph] Centrality 계산 실패: {e}")
+            return 0.0
+
+    def find_related_memories_hybrid(
+        self, 
+        query: str, 
+        k: int = 5, 
+        alpha: float = 0.7, 
+        max_distance: int = 2
+    ) -> Tuple[str, List[str]]:
+        """하이브리드 검색: 벡터 검색 + 그래프 확장 + 점수 통합
+        
+        Args:
+            query: 검색 쿼리
+            k: 벡터 검색 결과 수
+            alpha: 유사도 가중치 (0~1, 1-alpha는 centrality 가중치)
+            max_distance: 그래프 확장 최대 거리
+        
+        Returns:
+            (formatted_text, memory_ids) 튜플
+        """
+        print(f"\n🔍 [Hybrid Search] 쿼리: '{query}' (α={alpha}, d={max_distance})")
+        
+        # Stage 1: Vector Retrieval
+        vector_results = {}
+        vector_ids = []
+        
+        try:
+            results = self.m.search(query, user_id=self.user_id, limit=k)
+            
+            if isinstance(results, dict):
+                if "results" in results:
+                    results = results["results"]
+                else:
+                    results = []
+            
+            # 벡터 검색 결과와 유사도 점수 저장
+            for idx, item in enumerate(results):
+                mem_id = item.get("id", "unknown")
+                # score가 있으면 사용, 없으면 순위 기반 유사도 추정
+                similarity = item.get("score", 1.0 - (idx * 0.1))
+                vector_results[mem_id] = similarity
+                vector_ids.append(mem_id)
+                
+        except Exception as e:
+            print(f"⚠️ [Hybrid] 벡터 검색 실패, fallback 사용: {e}")
+            return self._fallback_search(query, k)
+        
+        if not vector_ids:
+            print(f"⚠️ [Hybrid] 벡터 검색 결과 없음, fallback 사용")
+            return self._fallback_search(query, k)
+        
+        print(f"✅ [Hybrid] Stage 1 완료: {len(vector_ids)}개 벡터 결과")
+        
+        # Stage 2: Graph Expansion
+        expanded_nodes = self._graph_expansion(vector_ids, max_distance=max_distance)
+        print(f"✅ [Hybrid] Stage 2 완료: {len(expanded_nodes)}개 확장 노드")
+        
+        # Stage 3: Integration - 점수 통합
+        all_nodes = set(vector_ids) | set(expanded_nodes.keys())
+        scored_nodes = {}
+        
+        for node_id in all_nodes:
+            # 벡터 유사도 (없으면 0)
+            sim_score = vector_results.get(node_id, 0.0)
+            
+            # Centrality 점수
+            if node_id in expanded_nodes:
+                centrality_score = expanded_nodes[node_id]
+            else:
+                # 벡터 결과지만 그래프에 없는 경우 centrality 계산
+                centrality_score = self._calculate_node_centrality(node_id)
+            
+            # 정규화 (0~1 범위로)
+            normalized_sim = sim_score if sim_score <= 1.0 else 1.0 / (1.0 + sim_score)
+            normalized_centrality = min(centrality_score / 10.0, 1.0)  # 최대 10으로 정규화
+            
+            # 통합 점수: score(a_i) = α · sim(q, a_i) + (1-α) · centrality(a_i)
+            final_score = alpha * normalized_sim + (1 - alpha) * normalized_centrality
+            scored_nodes[node_id] = {
+                'score': final_score,
+                'sim': normalized_sim,
+                'centrality': normalized_centrality
+            }
+        
+        # 점수 순으로 정렬
+        sorted_nodes = sorted(
+            scored_nodes.items(), 
+            key=lambda x: x[1]['score'], 
+            reverse=True
+        )[:k * 2]  # 최대 k*2개까지 반환 (확장 포함)
+        
+        # 결과 포맷팅
+        formatted_text = ""
+        result_ids = []
+        
+        try:
+            from neo4j import GraphDatabase
+            driver = GraphDatabase.driver(
+                self.neo4j_url,
+                auth=(self.neo4j_user, self.neo4j_pass)
+            )
+            
+            with driver.session() as session:
+                for node_id, scores in sorted_nodes:
+                    # Neo4j에서 노드 정보 가져오기
+                    cypher_query = """
+                    MATCH (n:Memory {id: $node_id, user_id: $user_id})
+                    RETURN n.memory as memory, n.content as content, n.text as text,
+                           n.amem_context as context, n.amem_tags as tags
+                    """
+                    
+                    result = session.run(cypher_query, {"node_id": node_id, "user_id": self.user_id})
+                    record = result.single()
+                    
+                    if record:
+                        mem_text = record.get("memory") or record.get("content") or record.get("text") or ""
+                        context = record.get("context") or ""
+                        tags_str = record.get("tags") or ""
+                        tags = [t.strip() for t in tags_str.split(",")] if tags_str else []
+                        
+                        if mem_text:
+                            result_ids.append(node_id)
+                            formatted_text += (
+                                f"- [내용]: {mem_text[:500]}{'...' if len(mem_text) > 500 else ''}\n"
+                                f"  [맥락]: {context} | [태그]: {tags}\n"
+                                f"  [점수]: sim={scores['sim']:.3f}, centrality={scores['centrality']:.3f}, "
+                                f"final={scores['score']:.3f}\n"
+                            )
+            
+            driver.close()
+            
+        except Exception as e:
+            print(f"⚠️ [Hybrid] 결과 포맷팅 실패: {e}")
+            import traceback
+            print(f"   상세: {traceback.format_exc()[:200]}")
+            return self._fallback_search(query, k)
+        
+        print(f"✅ [Hybrid] Stage 3 완료: {len(result_ids)}개 최종 결과")
+        return formatted_text, result_ids
+
     def clear_all_memories(self) -> bool:
         """Clear all memories for this user from Neo4j.
         

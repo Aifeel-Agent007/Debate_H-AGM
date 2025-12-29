@@ -1,7 +1,10 @@
 """Moderator LangGraph agent implementation - Simple single-topic version."""
 
 import os
+import re
 import json
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal
 import httpx
 from langchain_openai import ChatOpenAI
@@ -299,9 +302,17 @@ class ModeratorAgent:
                 )
             previous_context = "\n\n".join(context_parts)
 
-        # Build query message
+        # Build query message with round-specific guidance
+        if round_number == 1:
+            round_guide = "이번 라운드는 첫 번째 발언입니다. 당신의 핵심 주장을 명확하게 제시해주세요."
+        else:
+            round_guide = f"""이번 라운드는 {round_number}번째 라운드입니다.
+상대 진영의 주장을 반박하거나, 같은 진영의 주장을 보완해주세요.
+상대방의 구체적인 발언을 인용하며 반박하세요. (예: "앞서 ~께서 말씀하신...")"""
+
         query = f"""토론 주제: {topic}
 현재 라운드: {round_number}
+라운드 안내: {round_guide}
 
 이전 발언 내용:
 {previous_context if previous_context else '(첫 발언입니다)'}
@@ -444,10 +455,9 @@ class ModeratorAgent:
     def _check_debate_complete(self, state: dict[str, Any]) -> dict[str, Any]:
         """Check if debate is complete and prepare for next round or finalize.
 
-        Uses LLM to determine if the debate should continue based on:
-        1. Whether new perspectives are being presented
-        2. If the discussion is becoming repetitive
-        3. If key points have been sufficiently covered
+        Uses 2-stage LLM analysis to determine if the debate should continue:
+        Stage 1: Classify each statement by type (new argument, rebuttal, elaboration, repetition)
+        Stage 2: Based on classification, decide whether to continue or stop
 
         Args:
             state: Current state
@@ -472,50 +482,108 @@ class ModeratorAgent:
 
         # If we're at round 2 or later, ask LLM if we should continue
         if round_number >= 2:
-            # Get responses from the last round
-            last_round_responses = [r for r in panel_responses if r.get("round_number") == round_number]
-
-            # Simplified responses for LLM analysis
-            simplified_responses = [
-                {
+            # Get all responses grouped by round for comprehensive evaluation
+            all_responses_by_round = {}
+            for r in panel_responses:
+                rnd = r.get("round_number", 1)
+                if rnd not in all_responses_by_round:
+                    all_responses_by_round[rnd] = []
+                all_responses_by_round[rnd].append({
                     "persona": r.get("persona", "Unknown"),
-                    "opinion": r.get("opinion", "")[:300]  # First 300 chars
-                }
-                for r in last_round_responses
-            ]
+                    "opinion": r.get("opinion", ""),
+                    "reasoning": r.get("reasoning", "")
+                })
 
-            prompt = f"""당신은 토론 사회자입니다. 현재 토론을 계속 진행해야 할지 판단해주세요.
+            # Format all responses for LLM analysis
+            formatted_responses = ""
+            for rnd in sorted(all_responses_by_round.keys()):
+                formatted_responses += f"\n=== Round {rnd} ===\n"
+                for resp in all_responses_by_round[rnd]:
+                    formatted_responses += f"\n[{resp['persona']}]\n"
+                    formatted_responses += f"의견: {resp['opinion']}\n"
+                    formatted_responses += f"근거: {resp['reasoning']}\n"
+
+            prompt = f"""당신은 토론 사회자입니다. 토론을 계속 진행할지 2단계로 분석해주세요.
 
 토론 주제: {topic}
 현재 라운드: {round_number}/{max_rounds}
-총 발언 수: {len(panel_responses)}
 
-최근 라운드(Round {round_number}) 발언 내용:
-{json.dumps(simplified_responses, ensure_ascii=False, indent=2)}
+전체 토론 내용:
+{formatted_responses}
 
-판단 기준:
-1. 새로운 관점이나 논점이 계속 제시되고 있는가?
-2. 토론이 심화되고 발전하고 있는가?
-3. 패널들이 반복적인 주장만 하고 있지는 않은가?
-4. 주제에 대한 핵심 쟁점들이 충분히 다루어졌는가?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[1단계] 최근 라운드(Round {round_number}) 발언 유형 분류
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-다음 형식으로 답변하세요:
+각 패널의 발언을 아래 4가지 유형으로 분류하세요:
 
+1. 새로운 주장 (NEW): 이전에 없던 새로운 관점, 논점, 근거 제시
+2. 반박 (REBUTTAL): 상대 진영의 특정 주장에 대한 직접적 반론
+   - 단순히 "그건 틀렸다"가 아니라 구체적 근거로 반박해야 함
+   - 반박은 토론의 핵심이므로 새로운 기여로 인정
+3. 보충/심화 (ELABORATION): 자신 또는 같은 진영의 주장을 새로운 예시/근거로 확장
+   - 같은 주장이라도 새로운 근거나 구체적 예시가 있으면 보충으로 인정
+4. 단순 반복 (REPETITION): 이전 주장을 새로운 근거 없이 그대로 되풀이
+   - 핵심 내용이 동일하고 새로운 논거가 없는 경우만 해당
+
+※ 중요: 단순히 단어가 비슷하다고 반복이 아닙니다!
+   - "경제 성장이 중요하다" → "경제 성장을 위해 규제 완화가 필요하다"는 보충(ELABORATION)
+   - 상대방 주장을 언급하며 반박하면 반박(REBUTTAL)
+   - 정말 같은 내용을 새 근거 없이 반복할 때만 반복(REPETITION)
+
+[Round {round_number} 발언 분류]
+- 우파 정치인: (유형) - (간략한 근거)
+- 우파 학자: (유형) - (간략한 근거)
+- 좌파 정치인: (유형) - (간략한 근거)
+- 좌파 학자: (유형) - (간략한 근거)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[2단계] 토론 계속 여부 판단
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+위 분류 결과를 바탕으로 판단하세요:
+
+종료 권고 조건 (하나라도 해당되면 STOP):
+✗ 4명 중 3명 이상이 "단순 반복(REPETITION)"인 경우
+✗ 2라운드 연속 새로운 주장이나 의미 있는 반박이 없는 경우
+✗ 핵심 쟁점에 대해 양측 입장이 충분히 개진되어 더 이상 새로운 논의가 어려운 경우
+
+계속 권고 조건 (해당되면 CONTINUE):
+✓ 새로운 주장(NEW)이나 의미 있는 반박(REBUTTAL)이 있는 경우
+✓ 토론이 더 구체적/심층적으로 발전하고 있는 경우
+✓ 아직 다루지 않은 중요한 측면이 남아 있는 경우
+
+[최종 판단]
 결정: CONTINUE 또는 STOP
-이유: (1-2문장으로 판단 근거를 설명)
-
-예시:
-결정: CONTINUE
-이유: 각 패널이 새로운 경제적 관점을 제시하고 있으며, 토론이 더 깊이 있게 발전하고 있습니다.
-
-또는
-
-결정: STOP
-이유: 패널들이 이미 제시한 주장을 반복하고 있으며, 핵심 쟁점에 대한 논의가 충분히 이루어졌습니다."""
+이유: (분류 결과를 근거로 1-2문장 설명)"""
 
             try:
                 response = self.llm.invoke(prompt)
                 content = response.content.strip()
+
+                # Parse classification results for each panelist
+                classifications = {}
+                classification_lines = []
+                for line in content.split('\n'):
+                    line = line.strip()
+                    # Parse panelist classifications (e.g., "- 우파 정치인: NEW - ...")
+                    if line.startswith("- 우파 정치인:") or line.startswith("- 우파 학자:") or \
+                       line.startswith("- 좌파 정치인:") or line.startswith("- 좌파 학자:"):
+                        classification_lines.append(line)
+                        # Extract persona and type
+                        parts = line.split(":", 1)
+                        if len(parts) == 2:
+                            persona = parts[0].replace("-", "").strip()
+                            type_part = parts[1].strip()
+                            # Determine type
+                            if "NEW" in type_part.upper() or "새로운" in type_part:
+                                classifications[persona] = "NEW"
+                            elif "REBUTTAL" in type_part.upper() or "반박" in type_part:
+                                classifications[persona] = "REBUTTAL"
+                            elif "ELABORATION" in type_part.upper() or "보충" in type_part or "심화" in type_part:
+                                classifications[persona] = "ELABORATION"
+                            elif "REPETITION" in type_part.upper() or "반복" in type_part:
+                                classifications[persona] = "REPETITION"
 
                 # Parse decision and reason
                 decision_line = ""
@@ -533,22 +601,43 @@ class ModeratorAgent:
 
                 should_continue = "CONTINUE" in decision_line
 
-                # Log decision with reason
+                # Count repetitions
+                repetition_count = sum(1 for t in classifications.values() if t == "REPETITION")
+                productive_count = sum(1 for t in classifications.values() if t in ["NEW", "REBUTTAL"])
+
+                # Type emoji mapping
+                type_emoji = {
+                    "NEW": "🆕 새로운 주장",
+                    "REBUTTAL": "⚔️ 반박",
+                    "ELABORATION": "📝 보충/심화",
+                    "REPETITION": "🔄 단순 반복"
+                }
+
+                # Log decision with classification details
                 logger.info(f"\n{'='*80}")
-                logger.info(f"사회자 토론 계속 여부 판단 (Round {round_number})")
+                logger.info(f"사회자 토론 분석 (Round {round_number})")
                 logger.info(f"{'='*80}")
-                logger.info(f"결정: {'CONTINUE (계속)' if should_continue else 'STOP (종료)'}")
+                logger.info(f"[발언 유형 분류]")
+                for persona, cls_type in classifications.items():
+                    logger.info(f"  {persona}: {type_emoji.get(cls_type, cls_type)}")
+                logger.info(f"[통계] 생산적 발언: {productive_count}/4, 단순 반복: {repetition_count}/4")
+                logger.info(f"[결정] {'CONTINUE (계속)' if should_continue else 'STOP (종료)'}")
                 if reason_line:
-                    logger.info(f"이유: {reason_line}")
+                    logger.info(f"[이유] {reason_line}")
                 logger.info(f"{'='*80}\n")
 
                 # Also print to console for real-time monitoring
                 print(f"\n{'='*80}")
-                print(f"🎯 사회자 판단 (Round {round_number}/{max_rounds})")
+                print(f"🎯 사회자 토론 분석 (Round {round_number}/{max_rounds})")
                 print(f"{'='*80}")
-                print(f"결정: {'✅ CONTINUE (토론 계속)' if should_continue else '🛑 STOP (토론 종료)'}")
+                print(f"📊 [발언 유형 분류]")
+                for persona, cls_type in classifications.items():
+                    print(f"   {persona}: {type_emoji.get(cls_type, cls_type)}")
+                print(f"📈 [통계] 생산적 발언(NEW/REBUTTAL): {productive_count}/4, 단순 반복: {repetition_count}/4")
+                print(f"{'─'*80}")
+                print(f"{'✅ 결정: CONTINUE (토론 계속)' if should_continue else '🛑 결정: STOP (토론 종료)'}")
                 if reason_line:
-                    print(f"이유: {reason_line}")
+                    print(f"💬 이유: {reason_line}")
                 print(f"{'='*80}\n")
 
                 if not should_continue:
@@ -600,6 +689,103 @@ class ModeratorAgent:
             logger.info(f"All {max_rounds} rounds completed")
             return "finalize"
 
+    def _save_debate_to_file(
+        self,
+        topic: str,
+        panel_responses: list[dict],
+        actual_rounds: int,
+        total_time: float
+    ) -> str | None:
+        """Save debate content to a file.
+
+        Args:
+            topic: Debate topic
+            panel_responses: All panelist responses
+            actual_rounds: Actually completed rounds
+            total_time: Total debate time in minutes
+
+        Returns:
+            File path if saved successfully, None otherwise
+        """
+        if not panel_responses:
+            logger.warning("No panel responses to save")
+            return None
+
+        try:
+            # 1. 디렉토리 확인 및 생성
+            project_root = Path(__file__).parent.parent.parent
+            debate_dir = project_root / "debate"
+            debate_dir.mkdir(parents=True, exist_ok=True)
+
+            # 2. 파일명 생성 (특수문자 제거)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_topic = re.sub(r'[<>:"/\\|?*\n\r\t]', '', topic)
+            safe_topic = safe_topic.replace(' ', '_')[:50]
+            filename = f"{timestamp}_{safe_topic}.txt"
+            filepath = debate_dir / filename
+
+            # 3. 파일 내용 구성
+            content_lines = []
+
+            # 헤더
+            content_lines.append("=" * 60)
+            content_lines.append(f"토론 주제: {topic}")
+            content_lines.append(f"생성 일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            content_lines.append(f"총 라운드: {actual_rounds}")
+            content_lines.append(f"총 발언 수: {len(panel_responses)}")
+            content_lines.append(f"총 토론 시간: {total_time:.1f}분")
+            content_lines.append("=" * 60)
+            content_lines.append("")
+
+            # 라운드별 발언 정리
+            for round_num in range(1, actual_rounds + 1):
+                round_responses = [
+                    r for r in panel_responses
+                    if r.get("round_number") == round_num
+                ]
+                if not round_responses:
+                    break
+
+                content_lines.append(f"[라운드 {round_num}]")
+                content_lines.append("-" * 40)
+                content_lines.append("")
+
+                for resp in round_responses:
+                    persona = resp.get("persona", "알 수 없음")
+                    stance = resp.get("stance", "")
+                    opinion = resp.get("opinion", "")
+                    reasoning = resp.get("reasoning", "")
+
+                    # 입장 한글화
+                    stance_kr = {
+                        "pro": "찬성",
+                        "con": "반대",
+                        "neutral": "중립",
+                        "conditional": "조건부"
+                    }.get(stance, stance)
+
+                    content_lines.append(f"[{persona}] ({stance_kr})")
+                    content_lines.append("")
+                    content_lines.append("【의견】")
+                    content_lines.append(opinion)
+                    content_lines.append("")
+                    content_lines.append("【논거】")
+                    content_lines.append(reasoning)
+                    content_lines.append("")
+                    content_lines.append("-" * 40)
+                    content_lines.append("")
+
+            # 4. 파일 저장
+            content = "\n".join(content_lines)
+            filepath.write_text(content, encoding="utf-8")
+
+            logger.info(f"Debate saved to file: {filepath}")
+            return str(filepath)
+
+        except Exception as e:
+            logger.error(f"Failed to save debate to file: {e}")
+            return None
+
     def _finalize_debate(self, state: dict[str, Any]) -> dict[str, Any]:
         """Finalize the debate and create summary.
 
@@ -613,7 +799,12 @@ class ModeratorAgent:
 
         topic = state["topic"]
         panel_responses = state.get("panel_responses", [])
-        max_rounds = state.get("max_rounds", 5)
+
+        # 실제 진행된 라운드 수 계산
+        actual_rounds = (
+            max(r.get("round_number", 1) for r in panel_responses)
+            if panel_responses else 0
+        )
 
         # Calculate total time used
         total_chars = sum(
@@ -625,14 +816,24 @@ class ModeratorAgent:
         logger.info(f"Total debate time: {total_time:.1f} minutes")
         logger.info(f"Total responses: {len(panel_responses)}")
 
+        # 토론 내용 파일로 저장
+        saved_filepath = self._save_debate_to_file(
+            topic=topic,
+            panel_responses=panel_responses,
+            actual_rounds=actual_rounds,
+            total_time=total_time
+        )
+
         # Simple summary (no LLM generation for now)
         summary = f"""토론이 완료되었습니다.
 
 토론 주제: {topic}
-총 라운드: {max_rounds}
+총 라운드: {actual_rounds}
 총 발언 수: {len(panel_responses)}
 총 토론 시간: {total_time:.1f}분
 """
+        if saved_filepath:
+            summary += f"저장 위치: {saved_filepath}\n"
 
         return {
             **state,
